@@ -20,7 +20,7 @@ SEAWEEDFS_ENV_EXAMPLE="${ROOT_DIR}/seaweedfs/.env.example"
 
 # --- Extract primary (first) domain from silver.yaml ---
 # Look for the first domain entry under the domains list
-MAIL_DOMAIN=$(grep -m 1 '^\s*-\s*domain:' "$CONFIG_FILE" | sed 's/.*domain:\s*//' | xargs)
+MAIL_DOMAIN=$("${SCRIPT_DIR}/yq-helper.sh" ".domains[0].domain" "$CONFIG_FILE")
 MAIL_DOMAIN=${MAIL_DOMAIN:-example.local}
 
 # --- Load SeaweedFS credentials from .env file ---

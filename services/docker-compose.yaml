@@ -26,14 +26,14 @@ services:
         condition: service_started
 
   raven-server:
-    image: ghcr.io/lsflk/raven:latest
+    image: raven:latest
     container_name: raven
     ports:
       - "143:143"
       - "993:993"
       - "24:24"
       - "12345:12345"
-      - "9100:9100"
+      - "9101:9100"
     volumes:
       - ./silver-config/raven/conf:/etc/raven:rw
       - ./silver-config/raven/data:/app/data:rw
@@ -183,7 +183,7 @@ services:
       thunder-setup:
         condition: service_completed_successfully
     ports:
-      - "8090:8090"
+      - "8091:8090"
     volumes:
       - thunder-db:/opt/thunder/repository/database
       - consent-db:/opt/thunder/consent/repository/database
@@ -334,7 +334,7 @@ services:
     container_name: grafana-local
     env_file: ".env"
     ports:
-      - 3000:3000
+      - "3002:3000"
     volumes:
       - grafana_data:/var/lib/grafana
       - ./silver-config/grafana/provisioning:/etc/grafana/provisioning:ro

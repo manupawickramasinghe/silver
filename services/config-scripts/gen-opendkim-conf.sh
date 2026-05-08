@@ -13,40 +13,23 @@ readonly CONFIGS_PATH="${ROOT_DIR}/silver-config/opendkim"
 
 # --- Helper: Extract domain configs from silver.yaml ---
 extract_domain_configs() {
-    awk '
-    /^[[:space:]]*-[[:space:]]*domain:/ {
-        domain = $0
-        sub(/^[[:space:]]*-[[:space:]]*domain:[[:space:]]*/, "", domain)
-        sub(/[[:space:]]*$/, "", domain)
-
-        selector = "mail"
-        keysize = "2048"
-
-        while ((getline line) > 0) {
-            if (line ~ /^[[:space:]]*-[[:space:]]*domain:/) {
-                print domain "," selector "," keysize
-                domain = line
-                sub(/^[[:space:]]*-[[:space:]]*domain:[[:space:]]*/, "", domain)
-                sub(/[[:space:]]*$/, "", domain)
-                selector = "mail"
-                keysize = "2048"
-                continue
-            }
-            if (line ~ /^[[:space:]]*dkim-selector:/) {
-                selector = line
-                sub(/^[[:space:]]*dkim-selector:[[:space:]]*/, "", selector)
-                if (selector == "" || selector == "null") selector = "mail"
-            }
-            if (line ~ /^[[:space:]]*dkim-key-size:/) {
-                keysize = line
-                sub(/^[[:space:]]*dkim-key-size:[[:space:]]*/, "", keysize)
-                if (keysize == "" || keysize == "null") keysize = "2048"
-            }
-            if (line ~ /^[^[:space:]#]/ && line !~ /domains:/) { break }
-        }
-        if (domain != "" && domain != "null") { print domain "," selector "," keysize }
-    }
-    ' "$SILVER_YAML_FILE"
+    local i=0
+    local domains
+    domains=$("${SCRIPT_DIR}/yq-helper.sh" '.domains[].domain' "${SILVER_YAML_FILE}")
+    for domain in $domains; do
+        local selector
+        selector=$("${SCRIPT_DIR}/yq-helper.sh" ".domains[$i].dkim-selector" "${SILVER_YAML_FILE}")
+        # Default to mail if selector is missing
+        selector=${selector:-mail}
+        
+        local keysize
+        keysize=$("${SCRIPT_DIR}/yq-helper.sh" ".domains[$i].dkim-key-size" "${SILVER_YAML_FILE}")
+        # Default to 2048 if keysize is missing
+        keysize=${keysize:-2048}
+        
+        echo "$domain,$selector,$keysize"
+        i=$((i+1))
+    done
 }
 
 # --- Main ---

@@ -7,7 +7,7 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 # Extract primary (first) domain from the domains list in silver.yaml
-readonly MAIL_DOMAIN=$(grep -m 1 '^\s*-\s*domain:' "${ROOT_DIR}/../conf/silver.yaml" | sed 's/.*domain:\s*//' | xargs)
+readonly MAIL_DOMAIN=$("${SCRIPT_DIR}/yq-helper.sh" ".domains[0].domain" "${ROOT_DIR}/../conf/silver.yaml")
 readonly LETSENCRYPT_PATH="${ROOT_DIR}/silver-config/certbot/keys/etc/live/${MAIL_DOMAIN}"
 readonly THUNDER_CERTS_PATH="${ROOT_DIR}/silver-config/thunder/certs"
 readonly THUNDER_DEPLOYMENT_FILE="${ROOT_DIR}/silver-config/thunder/deployment.yaml"

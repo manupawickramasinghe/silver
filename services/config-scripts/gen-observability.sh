@@ -14,7 +14,7 @@ GRAFANA_ALERTS_FILE="${SILVER_CONFIG}/grafana/provisioning/alerting/contact-poin
 GRAFANA_CERTS_DIR="${SILVER_CONFIG}/grafana/certs"
 
 # Certbot / Let's Encrypt paths
-MAIL_DOMAIN=$(grep -m 1 '^\s*-\s*domain:' "${PROJECT_ROOT}/../conf/silver.yaml" | sed 's/.*domain:\s*//' | xargs)
+MAIL_DOMAIN=$("$(dirname "${BASH_SOURCE[0]}")/yq-helper.sh" '.domains[0].domain' "${PROJECT_ROOT}/../conf/silver.yaml")
 LETSENCRYPT_DIR="${SILVER_CONFIG}/certbot/keys/etc/live/${MAIL_DOMAIN}"
 
 # Grafana config

@@ -13,7 +13,7 @@ readonly SILVER_YAML_FILE="${ROOT_DIR}/../conf/silver.yaml"
 readonly LETSENCRYPT_PATH="${ROOT_DIR}/silver-config/certbot/keys"
 
 # Extract domains from silver.yaml
-DOMAINS=$(grep '^\s*-\s*domain:' "${SILVER_YAML_FILE}" | sed 's/.*domain:\s*//' | xargs)
+DOMAINS=$("${SCRIPT_DIR}/yq-helper.sh" '.domains[].domain' "${SILVER_YAML_FILE}")
 
 if [ -z "$DOMAINS" ]; then
     echo "❌ Error: No domains found in ${SILVER_YAML_FILE}"

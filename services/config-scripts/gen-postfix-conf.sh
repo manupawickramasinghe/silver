@@ -14,8 +14,8 @@ readonly DKIM_SELECTOR=mail
 
 # --- Main Logic ---
 # Extract primary (first) domain from the domains list in silver.yaml
-readonly MAIL_DOMAIN=$(grep -m 1 '^\s*-\s*domain:' "${SILVER_YAML_FILE}" | sed 's/.*domain:\s*//' | xargs)
-#export RELAYHOST=$(yq -e '.relayhost' "$SILVER_YAML_FILE" || echo "")
+readonly MAIL_DOMAIN=$("${SCRIPT_DIR}/yq-helper.sh" '.domains[0].domain' "${SILVER_YAML_FILE}")
+export RELAYHOST=$("${SCRIPT_DIR}/yq-helper.sh" '.relayhost' "$SILVER_YAML_FILE")
 
 # --- Derived variables ---
 MAIL_HOSTNAME=${MAIL_HOSTNAME:-mail.$MAIL_DOMAIN}
