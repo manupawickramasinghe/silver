@@ -3,8 +3,17 @@ set -e
 
 CONFIG_FILE="/etc/postfix/silver.yaml"
 
-# Extract primary (first) domain from the domains list using awk
-MAIL_DOMAIN=$(awk '/^[[:space:]]*-[[:space:]]*domain:/ {sub(/^[[:space:]]*-[[:space:]]*domain:[[:space:]]*/, ""); print; exit}' "$CONFIG_FILE")
+# Extract primary (first) domain from the domains list
+if command -v yq >/dev/null 2>&1; then
+    # Robust YAML parsing using yq if available
+    MAIL_DOMAIN=$(yq '.domains[0].domain' "$CONFIG_FILE" 2>/dev/null)
+else
+    # Fallback using awk
+    MAIL_DOMAIN=$(awk '/^[[:space:]]*-[[:space:]]*domain:/ {sub(/^[[:space:]]*-[[:space:]]*domain:[[:space:]]*/, ""); print; exit}' "$CONFIG_FILE")
+fi
+
+# Clean up any potential quotes or spaces
+MAIL_DOMAIN=$(echo "$MAIL_DOMAIN" | tr -d '"' | tr -d "'" | tr -d ' ')
 
 # Fallback if extraction failed
 if [ -z "$MAIL_DOMAIN" ] || [ "$MAIL_DOMAIN" = "null" ]; then
