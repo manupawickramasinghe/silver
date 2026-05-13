@@ -1,8 +1,11 @@
 # data_generator.py - Test data generation utilities
 import os
 import random
+import logging
 from faker import Faker
 from config import EmailServerConfig
+
+logger = logging.getLogger(__name__)
 
 
 class TestDataGenerator:
@@ -78,7 +81,7 @@ class TestDataGenerator:
         # Validate all files are under limit
         for filename, size in list(files.items()):
             if size > max_size:
-                print(f"Warning: {filename} ({size} bytes) exceeds max size ({max_size} bytes), adjusting...")
+                logger.warning("%s (%d bytes) exceeds max size (%d bytes), adjusting...", filename, size, max_size)
                 files[filename] = max_size
 
         # Create files if missing
