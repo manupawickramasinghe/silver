@@ -40,6 +40,35 @@ class SMTPLoadTester(User):
         self.user_account = self.user_manager.get_random_user()
         logger.info(f"Starting SMTP tests for user: {self.user_account['email']}")
     
+    def _handle_smtp_error(self, e, start_time, name, log_context, server=None):
+        """Helper method to handle SMTP errors, rate limiting, logging, and events"""
+        response_time = (time.time() - start_time) * 1000
+
+        # Check if this is a rate limit error
+        if self._is_rate_limit_error(e):
+            logger.info("SMTP rate limit hit %s (expected): %s", log_context, e)
+            self.environment.events.request.fire(
+                request_type="SMTP",
+                name=f"{name}_rate_limited",
+                response_time=response_time,
+                response_length=0,
+                exception=None  # Don't treat as failure
+            )
+        else:
+            self.environment.events.request.fire(
+                request_type="SMTP",
+                name=name,
+                response_time=response_time,
+                response_length=0,
+                exception=e
+            )
+
+        if server:
+            try:
+                server.quit()
+            except:
+                pass
+
     def _is_rate_limit_error(self, exception):
         """Check if exception is a rate limit error (421 - too many connections)"""
         if isinstance(exception, smtplib.SMTPConnectError):
@@ -76,34 +105,7 @@ class SMTPLoadTester(User):
             return server
             
         except Exception as e:
-            response_time = (time.time() - start_time) * 1000
-            
-            # Check if this is a rate limit error (expected during load testing)
-            if self._is_rate_limit_error(e):
-                logger.info(f"SMTP rate limit hit (expected): {e}")
-                # Report as success with a special marker
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="connect_rate_limited",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=None  # Don't treat as failure
-                )
-            else:
-                # Real error - report as failure
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="connect",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=e
-                )
-            
-            if server:
-                try:
-                    server.quit()
-                except:
-                    pass
+            self._handle_smtp_error(e, start_time, "connect", "", server)
             return None
     
     @task(5)
@@ -137,32 +139,7 @@ class SMTPLoadTester(User):
             )
             
         except Exception as e:
-            response_time = (time.time() - start_time) * 1000
-            
-            # Check if this is a rate limit error
-            if self._is_rate_limit_error(e):
-                logger.info(f"SMTP rate limit hit during send (expected): {e}")
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="send_text_rate_limited",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=None  # Don't treat as failure
-                )
-            else:
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="send_text",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=e
-                )
-            
-            if server:
-                try:
-                    server.quit()
-                except:
-                    pass
+            self._handle_smtp_error(e, start_time, "send_text", "during send", server)
     
     @task(3)
     def send_html_email(self):
@@ -198,32 +175,7 @@ class SMTPLoadTester(User):
             )
             
         except Exception as e:
-            response_time = (time.time() - start_time) * 1000
-            
-            # Check if this is a rate limit error
-            if self._is_rate_limit_error(e):
-                logger.info(f"SMTP rate limit hit during send (expected): {e}")
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="send_html_rate_limited",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=None  # Don't treat as failure
-                )
-            else:
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="send_html",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=e
-                )
-            
-            if server:
-                try:
-                    server.quit()
-                except:
-                    pass
+            self._handle_smtp_error(e, start_time, "send_html", "during send", server)
     
     @task(1)
     def send_email_with_attachment(self):
@@ -283,32 +235,7 @@ class SMTPLoadTester(User):
             )
             
         except Exception as e:
-            response_time = (time.time() - start_time) * 1000
-            
-            # Check if this is a rate limit error
-            if self._is_rate_limit_error(e):
-                logger.info(f"SMTP rate limit hit during send (expected): {e}")
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="send_attachment_rate_limited",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=None  # Don't treat as failure
-                )
-            else:
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="send_attachment",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=e
-                )
-            
-            if server:
-                try:
-                    server.quit()
-                except:
-                    pass
+            self._handle_smtp_error(e, start_time, "send_attachment", "during send", server)
     
     @task(2)
     def send_bulk_emails(self):
@@ -346,29 +273,4 @@ class SMTPLoadTester(User):
             )
             
         except Exception as e:
-            response_time = (time.time() - start_time) * 1000
-            
-            # Check if this is a rate limit error
-            if self._is_rate_limit_error(e):
-                logger.info(f"SMTP rate limit hit during bulk send (expected): {e}")
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="send_bulk_rate_limited",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=None  # Don't treat as failure
-                )
-            else:
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="send_bulk",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=e
-                )
-            
-            if server:
-                try:
-                    server.quit()
-                except:
-                    pass
+            self._handle_smtp_error(e, start_time, "send_bulk", "during bulk send", server)
