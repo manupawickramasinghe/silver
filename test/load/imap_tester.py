@@ -128,6 +128,22 @@ class IMAPLoadTester(User):
         )
         return None
 
+    def _handle_task_error(self, name, start_time, exception, mail, log_message):
+        """Helper to handle IMAP task errors consistently"""
+        self.environment.events.request.fire(
+            request_type="IMAP",
+            name=name,
+            response_time=(time.time() - start_time) * 1000,
+            response_length=0,
+            exception=exception
+        )
+        if mail:
+            try:
+                mail.logout()
+            except:
+                pass
+        logger.error(f"{log_message}: {exception}")
+
     @task(5)
     def check_inbox(self):
         """Check inbox for new messages"""
@@ -152,19 +168,7 @@ class IMAPLoadTester(User):
             logger.info(f"Inbox check successful: {message_count} messages")
             
         except Exception as e:
-            self.environment.events.request.fire(
-                request_type="IMAP",
-                name="check_inbox",
-                response_time=(time.time() - start_time) * 1000,
-                response_length=0,
-                exception=e
-            )
-            if mail:
-                try: 
-                    mail.logout()
-                except: 
-                    pass
-            logger.error(f"Inbox check failed: {e}")
+            self._handle_task_error("check_inbox", start_time, e, mail, "Inbox check failed")
 
     @task(3)
     def list_folders(self):
@@ -189,19 +193,7 @@ class IMAPLoadTester(User):
             logger.info(f"Folder listing successful: {folder_count} folders")
             
         except Exception as e:
-            self.environment.events.request.fire(
-                request_type="IMAP",
-                name="list_folders",
-                response_time=(time.time() - start_time) * 1000,
-                response_length=0,
-                exception=e
-            )
-            if mail:
-                try: 
-                    mail.logout()
-                except: 
-                    pass
-            logger.error(f"Folder listing failed: {e}")
+            self._handle_task_error("list_folders", start_time, e, mail, "Folder listing failed")
 
     @task(2)
     def fetch_recent_messages(self):
@@ -246,16 +238,4 @@ class IMAPLoadTester(User):
                 )
                 
         except Exception as e:
-            self.environment.events.request.fire(
-                request_type="IMAP",
-                name="fetch_messages",
-                response_time=(time.time() - start_time) * 1000,
-                response_length=0,
-                exception=e
-            )
-            if mail:
-                try: 
-                    mail.logout()
-                except: 
-                    pass
-            logger.error(f"Message fetch failed: {e}")
+            self._handle_task_error("fetch_messages", start_time, e, mail, "Message fetch failed")
