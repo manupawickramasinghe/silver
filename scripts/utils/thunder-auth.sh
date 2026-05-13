@@ -105,11 +105,30 @@ thunder_authenticate() {
 
     # Step 3: Complete authentication flow (get assertion)
     echo "  - Completing authentication flow..."
+
+    # Load credentials from .env if available
+    local env_file="$(dirname "${BASH_SOURCE[0]}")/../../services/.env"
+    if [ -f "$env_file" ]; then
+        # Load .env variables without exporting them globally or executing commands
+        while IFS='=' read -r key value; do
+            if [[ $key =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+                # Strip single quotes around value
+                value=$(echo "$value" | sed "s/^'//;s/'$//")
+                # Strip double quotes around value
+                value=$(echo "$value" | sed 's/^"//;s/"$//')
+                declare "$key=$value"
+            fi
+        done < "$env_file"
+    fi
+
+    local admin_username="${THUNDER_ADMIN_USERNAME:-admin}"
+    local admin_password="${THUNDER_ADMIN_PASSWORD:-admin}"
+
     local auth_response
     auth_response=$(curl -s -w "\n%{http_code}" -X POST \
         "https://${thunder_host}:${thunder_port}/flow/execute" \
         -H "Content-Type: application/json" \
-        -d "{\"flowId\":\"${FLOW_ID}\",\"inputs\":{\"username\":\"admin\",\"password\":\"admin\",\"requested_permissions\":\"system\"},\"action\":\"action_001\"}")
+        -d "{\"flowId\":\"${FLOW_ID}\",\"inputs\":{\"username\":\"${admin_username}\",\"password\":\"${admin_password}\",\"requested_permissions\":\"system\"},\"action\":\"action_001\"}")
 
     local auth_body
     local auth_status
