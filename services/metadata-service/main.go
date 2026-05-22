@@ -243,8 +243,12 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 func apiKeyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if config.APIKey == "" {
-			log.Println("Warning: API_KEY not configured, skipping authentication")
-			next.ServeHTTP(w, r)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": "Server misconfiguration: API key not configured",
+			})
+			log.Printf("Blocked request to %s: API_KEY not configured on server", r.URL.Path)
 			return
 		}
 
