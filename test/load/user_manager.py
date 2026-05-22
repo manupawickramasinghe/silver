@@ -8,6 +8,7 @@ from config import MAIL_DOMAIN
 
 class TestUserManager:
     """Manage test user accounts"""
+    __test__ = False
     
     def __init__(self, users_file="test_data/users.csv"):
         self.users_file = users_file
