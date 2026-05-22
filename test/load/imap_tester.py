@@ -81,8 +81,8 @@ class IMAPLoadTester(User):
             if mail:
                 try: 
                     mail.logout()
-                except: 
-                    pass
+                except Exception as logout_error:
+                    logger.warning("Error during IMAP logout: %s", logout_error)
             return None, None
     
     def _connect_imap(self):
@@ -162,9 +162,9 @@ class IMAPLoadTester(User):
             if mail:
                 try: 
                     mail.logout()
-                except: 
-                    pass
-            logger.error(f"Inbox check failed: {e}")
+                except Exception as logout_error:
+                    logger.warning("Error during IMAP logout: %s", logout_error)
+            logger.error("Inbox check failed: %s", e)
 
     @task(3)
     def list_folders(self):
@@ -199,9 +199,9 @@ class IMAPLoadTester(User):
             if mail:
                 try: 
                     mail.logout()
-                except: 
-                    pass
-            logger.error(f"Folder listing failed: {e}")
+                except Exception as logout_error:
+                    logger.warning("Error during IMAP logout: %s", logout_error)
+            logger.error("Folder listing failed: %s", e)
 
     @task(2)
     def fetch_recent_messages(self):
@@ -256,6 +256,6 @@ class IMAPLoadTester(User):
             if mail:
                 try: 
                     mail.logout()
-                except: 
-                    pass
-            logger.error(f"Message fetch failed: {e}")
+                except Exception as logout_error:
+                    logger.warning("Error during IMAP logout: %s", logout_error)
+            logger.error("Message fetch failed: %s", e)
