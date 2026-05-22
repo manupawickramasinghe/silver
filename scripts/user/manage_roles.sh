@@ -85,12 +85,14 @@ get_user_id() {
 	local username="$2"
 	local domain="$3"
 
-	local user_id=$(docker exec "$smtp_container" bash -c "
-        sqlite3 /app/data/databases/shared.db \"
+	local safe_username="${username//\'/''}"
+	local safe_domain="${domain//\'/''}"
+
+	local user_id=$(docker exec "$smtp_container" sqlite3 /app/data/databases/shared.db "
             SELECT u.id FROM users u
             INNER JOIN domains d ON u.domain_id = d.id
-            WHERE u.username='${username}' AND d.domain='${domain}' AND u.enabled=1;
-        \"" 2>/dev/null | tr -d '\n\r')
+            WHERE u.username='${safe_username}' AND d.domain='${safe_domain}' AND u.enabled=1;
+        " 2>/dev/null | tr -d '\n\r')
 
 	if [ -z "$user_id" ]; then
 		echo -e "${RED}✗ User ${username}@${domain} not found${NC}"
@@ -104,11 +106,12 @@ get_role_id() {
 	local smtp_container="$1"
 	local role_email="$2"
 
-	local role_id=$(docker exec "$smtp_container" bash -c "
-        sqlite3 /app/data/databases/shared.db \"
+	local safe_role_email="${role_email//\'/''}"
+
+	local role_id=$(docker exec "$smtp_container" sqlite3 /app/data/databases/shared.db "
             SELECT id FROM role_mailboxes
-            WHERE email='${role_email}' AND enabled=1;
-        \"" 2>/dev/null | tr -d '\n\r')
+            WHERE email='${safe_role_email}' AND enabled=1;
+        " 2>/dev/null | tr -d '\n\r')
 
 	if [ -z "$role_id" ]; then
 		echo -e "${RED}✗ Role mailbox ${role_email} not found${NC}"
@@ -131,11 +134,10 @@ add_user_to_role() {
 	local role_id=$(get_role_id "$smtp_container" "$role_email") || return 1
 
 	# Check if already assigned
-	local exists=$(docker exec "$smtp_container" bash -c "
-        sqlite3 /app/data/databases/shared.db \"
+	local exists=$(docker exec "$smtp_container" sqlite3 /app/data/databases/shared.db "
             SELECT COUNT(*) FROM user_role_assignments
             WHERE user_id=${user_id} AND role_mailbox_id=${role_id} AND is_active=1;
-        \"" 2>/dev/null | tr -d '\n\r')
+        " 2>/dev/null | tr -d '\n\r')
 
 	if [ "$exists" != "0" ]; then
 		echo -e "${YELLOW}⚠ User ${user_email} is already assigned to ${role_email}${NC}"
@@ -143,11 +145,10 @@ add_user_to_role() {
 	fi
 
 	# Create new assignment
-	docker exec "$smtp_container" bash -c "
-        sqlite3 /app/data/databases/shared.db \"
+	docker exec "$smtp_container" sqlite3 /app/data/databases/shared.db "
             INSERT INTO user_role_assignments (user_id, role_mailbox_id, assigned_at, is_active)
             VALUES (${user_id}, ${role_id}, datetime('now'), 1);
-        \""
+        "
 
 	if [ $? -eq 0 ]; then
 		echo -e "${GREEN}✓ Successfully assigned ${user_email} to ${role_email}${NC}"
@@ -172,16 +173,14 @@ remove_user_from_role() {
 	local role_id=$(get_role_id "$smtp_container" "$role_email") || return 1
 
 	# Delete the assignment entry
-	docker exec "$smtp_container" bash -c "
-        sqlite3 /app/data/databases/shared.db \"
+	docker exec "$smtp_container" sqlite3 /app/data/databases/shared.db "
             DELETE FROM user_role_assignments
             WHERE user_id=${user_id} AND role_mailbox_id=${role_id};
-        \""
+        "
 
-	local rows_affected=$(docker exec "$smtp_container" bash -c "
-        sqlite3 /app/data/databases/shared.db \"
+	local rows_affected=$(docker exec "$smtp_container" sqlite3 /app/data/databases/shared.db "
             SELECT changes();
-        \"" 2>/dev/null | tr -d '\n\r')
+        " 2>/dev/null | tr -d '\n\r')
 
 	if [ "$rows_affected" != "0" ]; then
 		echo -e "${GREEN}✓ Successfully removed ${user_email} from ${role_email}${NC}"
@@ -231,12 +230,14 @@ list_user_assignments() {
 
 	read -r username domain <<<"$(parse_email "$user_email")"
 
+	local safe_username="${username//\'/''}"
+	local safe_domain="${domain//\'/''}"
+
 	echo -e "${CYAN}========================================${NC}"
 	echo -e "${CYAN}Role Assignments for: ${GREEN}${user_email}${NC}"
 	echo -e "${CYAN}========================================${NC}"
 
-	docker exec "$smtp_container" bash -c "
-        sqlite3 /app/data/databases/shared.db \"
+	docker exec "$smtp_container" sqlite3 /app/data/databases/shared.db "
             SELECT
                 '  • ' || r.email ||
                 ' (assigned: ' || datetime(ura.assigned_at, 'localtime') || ')'
@@ -244,9 +245,9 @@ list_user_assignments() {
             INNER JOIN users u ON ura.user_id = u.id
             INNER JOIN role_mailboxes r ON ura.role_mailbox_id = r.id
             INNER JOIN domains d ON u.domain_id = d.id
-            WHERE u.username='${username}' AND d.domain='${domain}' AND ura.is_active=1
+            WHERE u.username='${safe_username}' AND d.domain='${safe_domain}' AND ura.is_active=1
             ORDER BY r.email;
-        \"" 2>/dev/null
+        " 2>/dev/null
 
 	if [ $? -ne 0 ]; then
 		echo -e "${YELLOW}No role assignments found${NC}"
@@ -258,12 +259,13 @@ list_role_users() {
 	local smtp_container="$1"
 	local role_email="$2"
 
+	local safe_role_email="${role_email//\'/''}"
+
 	echo -e "${CYAN}========================================${NC}"
 	echo -e "${CYAN}Users assigned to: ${GREEN}${role_email}${NC}"
 	echo -e "${CYAN}========================================${NC}"
 
-	docker exec "$smtp_container" bash -c "
-        sqlite3 /app/data/databases/shared.db \"
+	docker exec "$smtp_container" sqlite3 /app/data/databases/shared.db "
             SELECT
                 '  • ' || u.username || '@' || d.domain ||
                 ' (assigned: ' || datetime(ura.assigned_at, 'localtime') || ')'
@@ -271,9 +273,9 @@ list_role_users() {
             INNER JOIN users u ON ura.user_id = u.id
             INNER JOIN role_mailboxes r ON ura.role_mailbox_id = r.id
             INNER JOIN domains d ON u.domain_id = d.id
-            WHERE r.email='${role_email}' AND ura.is_active=1
+            WHERE r.email='${safe_role_email}' AND ura.is_active=1
             ORDER BY u.username;
-        \"" 2>/dev/null
+        " 2>/dev/null
 
 	if [ $? -ne 0 ]; then
 		echo -e "${YELLOW}No users assigned to this role${NC}"
@@ -288,8 +290,7 @@ list_all_assignments() {
 	echo -e "${CYAN}All Role Assignments${NC}"
 	echo -e "${CYAN}========================================${NC}"
 
-	docker exec "$smtp_container" bash -c "
-        sqlite3 /app/data/databases/shared.db \"
+	docker exec "$smtp_container" sqlite3 /app/data/databases/shared.db "
             SELECT
                 '  • ' || u.username || '@' || d.domain || ' → ' || r.email
             FROM user_role_assignments ura
@@ -298,7 +299,7 @@ list_all_assignments() {
             INNER JOIN domains d ON u.domain_id = d.id
             WHERE ura.is_active=1
             ORDER BY d.domain, u.username, r.email;
-        \"" 2>/dev/null
+        " 2>/dev/null
 
 	if [ $? -ne 0 ]; then
 		echo -e "${YELLOW}No role assignments found${NC}"
