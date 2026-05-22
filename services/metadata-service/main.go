@@ -26,11 +26,12 @@ var httpClient = &http.Client{
 // Compiled regex for ClamAV CVD header parsing
 var clamAVVDBRegex = regexp.MustCompile(`ClamAV-VDB:(\d+):(\d+):`)
 
+// Pre-allocated replacer for log sanitization
+var logSanitizer = strings.NewReplacer("\n", " ", "\r", " ")
+
 // sanitizeForLog removes newline and carriage return characters to prevent log injection
 func sanitizeForLog(s string) string {
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.ReplaceAll(s, "\r", " ")
-	return s
+	return logSanitizer.Replace(s)
 }
 
 // Configuration
@@ -46,10 +47,10 @@ type Config struct {
 
 // SuperPlatformHeartbeat represents the heartbeat payload for Super Platform
 type SuperPlatformHeartbeat struct {
-	Timestamp           string `json:"timestamp"`
-	InstanceID          string `json:"instance_id"`
-	SignatureVersion    string `json:"signature_version"`
-	SignatureUpdatedAt  string `json:"signature_updated_at"`
+	Timestamp          string `json:"timestamp"`
+	InstanceID         string `json:"instance_id"`
+	SignatureVersion   string `json:"signature_version"`
+	SignatureUpdatedAt string `json:"signature_updated_at"`
 }
 
 // SuperPlatformResult represents data received from Super Platform
@@ -108,7 +109,7 @@ func getServerIP() string {
 func getClamAVSignatureInfo() (version int, updatedAt time.Time, err error) {
 	// Look for daily.cvd or daily.cld
 	dailyPath := filepath.Join(config.ClamAVDBPath, "daily.cvd")
-	
+
 	// Check if daily.cvd exists, otherwise try daily.cld
 	info, err := os.Stat(dailyPath)
 	if os.IsNotExist(err) {
@@ -118,17 +119,17 @@ func getClamAVSignatureInfo() (version int, updatedAt time.Time, err error) {
 			return 0, time.Time{}, fmt.Errorf("daily.cvd/cld not found: %w", err)
 		}
 	}
-	
+
 	// Get modification time
 	updatedAt = info.ModTime()
-	
+
 	// Try to read CVD header to get version
 	file, err := os.Open(dailyPath)
 	if err != nil {
 		return 0, updatedAt, fmt.Errorf("failed to open %s: %w", dailyPath, err)
 	}
 	defer file.Close()
-	
+
 	header := make([]byte, 512)
 	if n, err := file.Read(header); err == nil && n > 0 {
 		// CVD header format: ClamAV-VDB:build_time:version:...
@@ -140,7 +141,7 @@ func getClamAVSignatureInfo() (version int, updatedAt time.Time, err error) {
 			}
 		}
 	}
-	
+
 	return version, updatedAt, nil
 }
 
@@ -150,13 +151,13 @@ func createHeartbeatPayload() (*SuperPlatformHeartbeat, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get ClamAV signature info: %w", err)
 	}
-	
+
 	// Determine file name (daily.cvd or daily.cld)
 	fileName := "daily.cvd"
 	if _, err := os.Stat(filepath.Join(config.ClamAVDBPath, "daily.cvd")); os.IsNotExist(err) {
 		fileName = "daily.cld"
 	}
-	
+
 	return &SuperPlatformHeartbeat{
 		Timestamp:          time.Now().UTC().Format(time.RFC3339),
 		InstanceID:         config.InstanceID,
@@ -213,7 +214,7 @@ func startPeriodicPush() {
 	ticker := time.NewTicker(config.PushInterval)
 	go func() {
 		log.Printf("Starting periodic metadata push service (interval: %v)", config.PushInterval)
-		
+
 		// Push immediately on startup
 		if err := pushMetadataToExternalAPI(); err != nil {
 			log.Printf("Error pushing metadata on startup: %v", err)
@@ -288,7 +289,7 @@ func receiveSuperPlatformResultHandler(w http.ResponseWriter, r *http.Request) {
 	// TODO: Process the result from Super Platform
 	// For now, just log and acknowledge
 	log.Printf("Received result from Super Platform: status=%s, timestamp=%s", sanitizeForLog(result.Status), sanitizeForLog(result.Timestamp))
-	
+
 	// Sanitize data for logging by converting to JSON string
 	dataJSON, err := json.Marshal(result.Data)
 	if err == nil {
@@ -340,7 +341,7 @@ func main() {
 	log.Printf("Instance ID: %s", config.InstanceID)
 	log.Printf("Push Interval: %v", config.PushInterval)
 	log.Printf("Push Service Enabled: %v", config.EnablePushService)
-	
+
 	if config.APIKey != "" {
 		log.Println("API Key authentication enabled")
 	} else {
