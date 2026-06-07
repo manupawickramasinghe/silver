@@ -95,6 +95,7 @@ echo -e "${CYAN}==============================================${NC}\n"
 # Get domain from config file
 echo -e "${YELLOW}Reading domain from configuration...${NC}"
 DOMAIN=$(get_domain_from_config)
+SAFE_DOMAIN="${DOMAIN//\'/\'\'}"
 echo -e "${GREEN}✓ Using domain: $DOMAIN${NC}\n"
 
 # Set Thunder host
@@ -142,7 +143,7 @@ if [ ! -f "$CREDENTIALS_FILE" ]; then
     echo -e "${YELLOW}Will attempt to remove all test users based on username patterns${NC}\n"
     
     # Get test user patterns from database (excluding admin users)
-    TEST_USERS=$(docker exec "$SMTP_CONTAINER" bash -c "sqlite3 /app/data/databases/shared.db \"SELECT u.username FROM users u INNER JOIN domains d ON u.domain_id = d.id WHERE d.domain='${DOMAIN}' AND u.enabled=1 AND u.username != 'admin' AND (u.username LIKE 'user%' OR u.username LIKE 'test%' OR u.username LIKE 'demo%' OR u.username LIKE 'employee%' OR u.username LIKE 'staff%' OR u.username LIKE 'member%');\" 2>/dev/null" | tr '\n' ' ')
+    TEST_USERS=$(docker exec "$SMTP_CONTAINER" bash -c "sqlite3 /app/data/databases/shared.db \"SELECT u.username FROM users u INNER JOIN domains d ON u.domain_id = d.id WHERE d.domain='${SAFE_DOMAIN}' AND u.enabled=1 AND u.username != 'admin' AND (u.username LIKE 'user%' OR u.username LIKE 'test%' OR u.username LIKE 'demo%' OR u.username LIKE 'employee%' OR u.username LIKE 'staff%' OR u.username LIKE 'member%');\" 2>/dev/null" | tr '\n' ' ')
     
     if [ -z "$TEST_USERS" ]; then
         echo -e "${YELLOW}No test users found matching patterns (user*, test*, demo*, employee*, staff*, member*)${NC}"
@@ -278,12 +279,14 @@ for USERNAME in $TEST_USERS; do
         continue
     fi
     
+    SAFE_USERNAME="${USERNAME//\'/\'\'}"
+
     # Get user ID from shared database first
     RESULT=$(docker exec "$SMTP_CONTAINER" bash -c "
         DB_PATH='/app/data/databases/shared.db'
         
         # Get domain_id
-        domain_id=\$(sqlite3 \"\$DB_PATH\" \"SELECT id FROM domains WHERE domain='${DOMAIN}' AND enabled=1;\" 2>/dev/null)
+        domain_id=\$(sqlite3 \"\$DB_PATH\" \"SELECT id FROM domains WHERE domain='${SAFE_DOMAIN}' AND enabled=1;\" 2>/dev/null)
         
         if [ -z \"\$domain_id\" ]; then
             echo 'DOMAIN_NOT_FOUND'
@@ -291,7 +294,7 @@ for USERNAME in $TEST_USERS; do
         fi
         
         # Get user ID
-        user_id=\$(sqlite3 \"\$DB_PATH\" \"SELECT id FROM users WHERE username='${USERNAME}' AND domain_id=\$domain_id;\" 2>/dev/null)
+        user_id=\$(sqlite3 \"\$DB_PATH\" \"SELECT id FROM users WHERE username='${SAFE_USERNAME}' AND domain_id=\$domain_id;\" 2>/dev/null)
         
         if [ -z \"\$user_id\" ]; then
             echo 'USER_NOT_FOUND'
@@ -347,15 +350,17 @@ for USERNAME in $TEST_USERS; do
         continue
     fi
     
+    SAFE_USERNAME="${USERNAME//\'/\'\'}"
+
     docker exec "$SMTP_CONTAINER" bash -c "
         DB_PATH='/app/data/databases/shared.db'
         
         # Get domain_id
-        domain_id=\$(sqlite3 \"\$DB_PATH\" \"SELECT id FROM domains WHERE domain='${DOMAIN}' AND enabled=1;\" 2>/dev/null)
+        domain_id=\$(sqlite3 \"\$DB_PATH\" \"SELECT id FROM domains WHERE domain='${SAFE_DOMAIN}' AND enabled=1;\" 2>/dev/null)
         
         if [ -n \"\$domain_id\" ]; then
             # Delete user from shared database
-            sqlite3 \"\$DB_PATH\" \"DELETE FROM users WHERE username='${USERNAME}' AND domain_id=\$domain_id;\" 2>/dev/null
+            sqlite3 \"\$DB_PATH\" \"DELETE FROM users WHERE username='${SAFE_USERNAME}' AND domain_id=\$domain_id;\" 2>/dev/null
             
             if [ \$? -eq 0 ]; then
                 echo 'SUCCESS'
