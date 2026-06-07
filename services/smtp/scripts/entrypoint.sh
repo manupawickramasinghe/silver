@@ -33,7 +33,9 @@ if [ -f "$DB_PATH" ]; then
     echo "✓ SQLite database found at $DB_PATH"
 
     # Ensure domain exists in database
-    sqlite3 "$DB_PATH" "INSERT OR IGNORE INTO domains (domain, enabled) VALUES ('${MAIL_DOMAIN}', 1);" 2>/dev/null || echo "Note: Could not insert domain (may already exist)"
+    # Escape single quotes in MAIL_DOMAIN to prevent SQL injection
+    ESCAPED_DOMAIN="${MAIL_DOMAIN//\'/\'\'}"
+    sqlite3 "$DB_PATH" "INSERT OR IGNORE INTO domains (domain, enabled) VALUES ('${ESCAPED_DOMAIN}', 1);" 2>/dev/null || echo "Note: Could not insert domain (may already exist)"
 
     # Set proper permissions
     chmod 644 "$DB_PATH"
