@@ -220,10 +220,11 @@ class IMAPLoadTester(User):
                 recent_ids = message_ids[-5:] if len(message_ids) >= 5 else message_ids
                 
                 fetched_count = 0
-                for msg_id in recent_ids:
-                    status, msg_data = mail.fetch(msg_id, '(RFC822)')
+                if recent_ids:
+                    message_set = b','.join(recent_ids)
+                    status, msg_data = mail.fetch(message_set, '(RFC822)')
                     if status == 'OK':
-                        fetched_count += 1
+                        fetched_count = len(recent_ids)
                 
                 mail.logout()
                 
