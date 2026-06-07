@@ -42,6 +42,7 @@ type Config struct {
 	EnablePushService bool
 	APIKey            string
 	InstanceID        string
+	AllowedOrigins    []string
 }
 
 // SuperPlatformHeartbeat represents the heartbeat payload for Super Platform
@@ -62,6 +63,14 @@ type SuperPlatformResult struct {
 var config Config
 
 func init() {
+	allowedOriginsStr := getEnv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")
+	var allowedOrigins []string
+	for _, origin := range strings.Split(allowedOriginsStr, ",") {
+		if trimmed := strings.TrimSpace(origin); trimmed != "" {
+			allowedOrigins = append(allowedOrigins, trimmed)
+		}
+	}
+
 	config = Config{
 		Port:              getEnv("PORT", "8888"),
 		ClamAVDBPath:      getEnv("CLAMAV_DB_PATH", "/var/lib/clamav"),
@@ -70,6 +79,7 @@ func init() {
 		EnablePushService: getEnv("ENABLE_PUSH_SERVICE", "true") == "true",
 		APIKey:            getEnv("API_KEY", ""),
 		InstanceID:        getServerIP(), // Use server IP as instance ID
+		AllowedOrigins:    allowedOrigins,
 	}
 }
 
@@ -168,29 +178,34 @@ func createHeartbeatPayload() (*SuperPlatformHeartbeat, error) {
 // pushMetadataToExternalAPI sends heartbeat to Super Platform
 func pushMetadataToExternalAPI() error {
 	if config.ExternalAPIURL == "" {
+		log.Println("Error: EXTERNAL_API_URL not configured")
 		return fmt.Errorf("EXTERNAL_API_URL not configured")
 	}
 
 	heartbeat, err := createHeartbeatPayload()
 	if err != nil {
+		log.Printf("Error creating heartbeat payload: %v", err)
 		return fmt.Errorf("failed to create heartbeat payload: %w", err)
 	}
 
 	jsonData, err := json.Marshal(heartbeat)
 	if err != nil {
+		log.Printf("Error marshaling heartbeat JSON: %v", err)
 		return fmt.Errorf("failed to marshal heartbeat: %w", err)
 	}
 
-	log.Printf("Sending heartbeat: %s", string(jsonData))
+	log.Printf("Sending heartbeat to %s", config.ExternalAPIURL)
 
 	resp, err := httpClient.Post(config.ExternalAPIURL, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
+		log.Printf("Network error pushing heartbeat: %v", err)
 		return fmt.Errorf("failed to send heartbeat: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
+		log.Printf("External API error (status: %d): %s", resp.StatusCode, string(body))
 		return fmt.Errorf("external API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -310,7 +325,27 @@ func receiveSuperPlatformResultHandler(w http.ResponseWriter, r *http.Request) {
 // CORS Middleware
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		
+		allowed := false
+		if origin != "" {
+			for _, ao := range config.AllowedOrigins {
+				if ao == origin {
+					allowed = true
+					break
+				}
+			}
+		}
+
+		if allowed {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		} else if len(config.AllowedOrigins) > 0 {
+			// Default to first allowed origin if no match but some are configured
+			// This is better than "*" but might still cause CORS issues for legitimate clients
+			// and is generally more secure for API services.
+			// Alternatively, don't set the header at all if not matched.
+		}
+
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-API-Key")
 
