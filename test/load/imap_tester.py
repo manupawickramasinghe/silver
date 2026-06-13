@@ -3,12 +3,50 @@ import time
 import ssl
 import imaplib
 import logging
+import functools
 from locust import User, task, between
 
 from config import EmailServerConfig
 from user_manager import TestUserManager
 
 logger = logging.getLogger(__name__)
+
+def record_imap_telemetry(name):
+    """Decorator to handle IMAP connection, timing, logging, and error handling."""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            mail = self._connect_imap()
+            if not mail:
+                return
+
+            start_time = time.time()
+            try:
+                response_length = func(self, mail, *args, **kwargs)
+                self.environment.events.request.fire(
+                    request_type="IMAP",
+                    name=name,
+                    response_time=(time.time() - start_time) * 1000,
+                    response_length=response_length or 0,
+                    exception=None
+                )
+            except Exception as e:
+                self.environment.events.request.fire(
+                    request_type="IMAP",
+                    name=name,
+                    response_time=(time.time() - start_time) * 1000,
+                    response_length=0,
+                    exception=e
+                )
+                logger.error(f"{name} failed: {e}")
+            finally:
+                try:
+                    mail.logout()
+                except Exception:
+                    pass
+        return wrapper
+    return decorator
+
 
 
 class IMAPLoadTester(User):
@@ -129,133 +167,40 @@ class IMAPLoadTester(User):
         return None
 
     @task(5)
-    def check_inbox(self):
+    @record_imap_telemetry("check_inbox")
+    def check_inbox(self, mail):
         """Check inbox for new messages"""
-        mail = self._connect_imap()
-        if not mail: 
-            return
-            
-        start_time = time.time()
-        try:
-            mail.select('INBOX')
-            status, messages = mail.search(None, 'ALL')
-            message_count = len(messages[0].split()) if messages[0] else 0
-            mail.logout()
-            
-            self.environment.events.request.fire(
-                request_type="IMAP",
-                name="check_inbox",
-                response_time=(time.time() - start_time) * 1000,
-                response_length=message_count,
-                exception=None
-            )
-            logger.info(f"Inbox check successful: {message_count} messages")
-            
-        except Exception as e:
-            self.environment.events.request.fire(
-                request_type="IMAP",
-                name="check_inbox",
-                response_time=(time.time() - start_time) * 1000,
-                response_length=0,
-                exception=e
-            )
-            if mail:
-                try: 
-                    mail.logout()
-                except: 
-                    pass
-            logger.error(f"Inbox check failed: {e}")
+        mail.select('INBOX')
+        status, messages = mail.search(None, 'ALL')
+        message_count = len(messages[0].split()) if messages[0] else 0
+        logger.info(f"Inbox check successful: {message_count} messages")
+        return message_count
 
     @task(3)
-    def list_folders(self):
+    @record_imap_telemetry("list_folders")
+    def list_folders(self, mail):
         """List available folders"""
-        mail = self._connect_imap()
-        if not mail: 
-            return
-            
-        start_time = time.time()
-        try:
-            status, folders = mail.list()
-            folder_count = len(folders) if folders else 0
-            mail.logout()
-            
-            self.environment.events.request.fire(
-                request_type="IMAP",
-                name="list_folders",
-                response_time=(time.time() - start_time) * 1000,
-                response_length=folder_count,
-                exception=None
-            )
-            logger.info(f"Folder listing successful: {folder_count} folders")
-            
-        except Exception as e:
-            self.environment.events.request.fire(
-                request_type="IMAP",
-                name="list_folders",
-                response_time=(time.time() - start_time) * 1000,
-                response_length=0,
-                exception=e
-            )
-            if mail:
-                try: 
-                    mail.logout()
-                except: 
-                    pass
-            logger.error(f"Folder listing failed: {e}")
+        status, folders = mail.list()
+        folder_count = len(folders) if folders else 0
+        logger.info(f"Folder listing successful: {folder_count} folders")
+        return folder_count
 
     @task(2)
-    def fetch_recent_messages(self):
+    @record_imap_telemetry("fetch_messages")
+    def fetch_recent_messages(self, mail):
         """Fetch recent messages"""
-        mail = self._connect_imap()
-        if not mail: 
-            return
+        mail.select('INBOX')
+        # Get recent messages (last 5)
+        status, messages = mail.search(None, 'ALL')
+        fetched_count = 0
+        if messages[0]:
+            message_ids = messages[0].split()
+            recent_ids = message_ids[-5:] if len(message_ids) >= 5 else message_ids
             
-        start_time = time.time()
-        try:
-            mail.select('INBOX')
-            # Get recent messages (last 5)
-            status, messages = mail.search(None, 'ALL')
-            if messages[0]:
-                message_ids = messages[0].split()
-                recent_ids = message_ids[-5:] if len(message_ids) >= 5 else message_ids
-                
-                fetched_count = 0
-                for msg_id in recent_ids:
-                    status, msg_data = mail.fetch(msg_id, '(RFC822)')
-                    if status == 'OK':
-                        fetched_count += 1
-                
-                mail.logout()
-                
-                self.environment.events.request.fire(
-                    request_type="IMAP",
-                    name="fetch_messages",
-                    response_time=(time.time() - start_time) * 1000,
-                    response_length=fetched_count,
-                    exception=None
-                )
-                logger.info(f"Message fetch successful: {fetched_count} messages")
-            else:
-                mail.logout()
-                self.environment.events.request.fire(
-                    request_type="IMAP",
-                    name="fetch_messages",
-                    response_time=(time.time() - start_time) * 1000,
-                    response_length=0,
-                    exception=None
-                )
-                
-        except Exception as e:
-            self.environment.events.request.fire(
-                request_type="IMAP",
-                name="fetch_messages",
-                response_time=(time.time() - start_time) * 1000,
-                response_length=0,
-                exception=e
-            )
-            if mail:
-                try: 
-                    mail.logout()
-                except: 
-                    pass
-            logger.error(f"Message fetch failed: {e}")
+            for msg_id in recent_ids:
+                status, msg_data = mail.fetch(msg_id, '(RFC822)')
+                if status == 'OK':
+                    fetched_count += 1
+
+            logger.info(f"Message fetch successful: {fetched_count} messages")
+        return fetched_count
