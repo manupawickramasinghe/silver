@@ -85,7 +85,7 @@ log_info "Creating default user schema (person)..."
 
 RESPONSE=$(thunder_api_call POST "/user-schemas" '{
   "name": "Person",
-  "ouId": "'${DEFAULT_OU_ID}'",
+  "ouId": "'"${DEFAULT_OU_ID}"'",
   "schema": {
     "username": {
       "type": "string",
@@ -176,18 +176,23 @@ echo ""
 
 log_info "Creating admin user..."
 
-# Read admin credentials from environment variables with defaults
-ADMIN_USERNAME="${THUNDER_ADMIN_USERNAME:-admin}"
-ADMIN_PASSWORD="${THUNDER_ADMIN_PASSWORD:-admin}"
+if [[ -z "$THUNDER_ADMIN_USERNAME" ]] || [[ -z "$THUNDER_ADMIN_PASSWORD" ]]; then
+    log_error "THUNDER_ADMIN_USERNAME and THUNDER_ADMIN_PASSWORD environment variables are required"
+    exit 1
+fi
+
+# Read admin credentials from environment variables
+ADMIN_USERNAME="${THUNDER_ADMIN_USERNAME}"
+ADMIN_PASSWORD="${THUNDER_ADMIN_PASSWORD}"
 
 log_info "Using admin username: ${ADMIN_USERNAME}"
 
 RESPONSE=$(thunder_api_call POST "/users" '{
   "type": "Person",
-  "ouId": "'${DEFAULT_OU_ID}'",
+  "ouId": "'"${DEFAULT_OU_ID}"'",
   "attributes": {
-    "username": "'${ADMIN_USERNAME}'",
-    "password": "'${ADMIN_PASSWORD}'",
+    "username": "'"${ADMIN_USERNAME}"'",
+    "password": "'"${ADMIN_PASSWORD}"'",
     "sub": "admin",
     "email": "admin@thunder.dev",
     "email_verified": true,
