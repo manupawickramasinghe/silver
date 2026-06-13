@@ -220,10 +220,14 @@ class IMAPLoadTester(User):
                 recent_ids = message_ids[-5:] if len(message_ids) >= 5 else message_ids
                 
                 fetched_count = 0
-                for msg_id in recent_ids:
-                    status, msg_data = mail.fetch(msg_id, '(RFC822)')
+                if recent_ids:
+                    # Optimize: Use bulk fetch instead of N+1 requests
+                    msg_sequence = b','.join(recent_ids)
+                    status, msg_data = mail.fetch(msg_sequence, '(RFC822)')
+
                     if status == 'OK':
-                        fetched_count += 1
+                        # imaplib typically returns a tuple per message part fetched
+                        fetched_count = len([d for d in msg_data if isinstance(d, tuple)])
                 
                 mail.logout()
                 
