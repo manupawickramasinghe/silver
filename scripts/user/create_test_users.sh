@@ -100,35 +100,37 @@ update_container_virtual_users() {
     local user_email="$2"
     local username="$3"
     local mail_domain="$4"
+    local db_path="/app/data/databases/shared.db"
 
-    docker exec "$smtp_container" bash -c "
-        DB_PATH='/app/data/databases/shared.db'
+    # Escape single quotes for SQL
+    local escaped_username="${username//\'/''}"
+    local escaped_domain="${mail_domain//\'/''}"
 
-        # Get domain_id
-        domain_id=\$(sqlite3 \"\$DB_PATH\" \"SELECT id FROM domains WHERE domain='${mail_domain}' AND enabled=1;\")
+    # Get domain_id
+    local domain_id
+    domain_id=$(docker exec "$smtp_container" sqlite3 "$db_path" "SELECT id FROM domains WHERE domain='${escaped_domain}' AND enabled=1;")
 
-        if [ -z \"\$domain_id\" ]; then
-            echo 'Error: Domain ${mail_domain} not found in database'
-            exit 1
-        fi
+    if [ -z "$domain_id" ]; then
+        echo "Error: Domain ${mail_domain} not found in database"
+        return 1
+    fi
 
-        # Insert user into database (INSERT OR REPLACE to avoid duplicates)
-        sqlite3 \"\$DB_PATH\" \"INSERT OR REPLACE INTO users (username, domain_id, enabled) VALUES ('${username}', \$domain_id, 1);\"
-
-        if [ \$? -eq 0 ]; then
-            echo 'User added to database successfully'
-        else
-            echo 'Failed to add user to database'
-            exit 1
-        fi
-    " 2>&1
+    # Insert user into database (INSERT OR REPLACE to avoid duplicates)
+    if docker exec "$smtp_container" sqlite3 "$db_path" "INSERT OR REPLACE INTO users (username, domain_id, enabled) VALUES ('${escaped_username}', ${domain_id}, 1);" 2>&1; then
+        echo 'User added to database successfully'
+    else
+        echo 'Failed to add user to database'
+        return 1
+    fi
 }
 
 # Check user count in container (from SQLite database)
 get_container_user_count() {
     local smtp_container="$1"
-    local count=$(docker exec "$smtp_container" bash -c "sqlite3 /app/data/databases/shared.db 'SELECT COUNT(*) FROM users WHERE enabled=1;' 2>/dev/null || echo '0'" | tr -d '\n\r' | head -c 10)
-    echo ${count:-0}
+    local count
+    count=$(docker exec "$smtp_container" sqlite3 /app/data/databases/shared.db 'SELECT COUNT(*) FROM users WHERE enabled=1;' 2>/dev/null || echo '0')
+    count=$(echo "$count" | tr -d '\n\r' | head -c 10)
+    echo "${count:-0}"
 }
 
 # Ensure domain exists in database
@@ -137,17 +139,14 @@ ensure_domain_exists() {
     local domain="$2"
     echo -e "${YELLOW}Ensuring domain ${domain} exists in database...${NC}"
 
-    DOMAIN_CHECK=$(docker exec "$smtp_container" bash -c "
-        sqlite3 /app/data/databases/shared.db \"SELECT COUNT(*) FROM domains WHERE domain='${domain}';\"
-    " 2>/dev/null | tr -d '\n\r')
+    local escaped_domain="${domain//\'/''}"
+    local domain_check
+    domain_check=$(docker exec "$smtp_container" sqlite3 /app/data/databases/shared.db "SELECT COUNT(*) FROM domains WHERE domain='${escaped_domain}';")
+    domain_check=$(echo "$domain_check" | tr -d '\n\r')
 
-    if [ "$DOMAIN_CHECK" = "0" ]; then
+    if [ "$domain_check" = "0" ]; then
         echo -e "${YELLOW}Domain ${domain} not found. Adding to database...${NC}"
-        docker exec "$smtp_container" bash -c "
-            sqlite3 /app/data/databases/shared.db \"INSERT INTO domains (domain, enabled, created_at) VALUES ('${domain}', 1, datetime('now'));\"
-        "
-
-        if [ $? -eq 0 ]; then
+        if docker exec "$smtp_container" sqlite3 /app/data/databases/shared.db "INSERT INTO domains (domain, enabled, created_at) VALUES ('${escaped_domain}', 1, datetime('now'));"; then
             echo -e "${GREEN}✓ Domain ${domain} added to database${NC}"
         else
             echo -e "${RED}✗ Failed to add domain to database${NC}"
@@ -253,7 +252,9 @@ for i in $(seq 1 "$USER_COUNT"); do
     PASSWORD=$(generate_password)
     
     # Check if user already exists in database
-    USER_EXISTS=$(docker exec "$SMTP_CONTAINER" bash -c "sqlite3 /app/data/databases/shared.db \"SELECT COUNT(*) FROM users u INNER JOIN domains d ON u.domain_id = d.id WHERE u.username='${USERNAME}' AND d.domain='${DOMAIN}' AND u.enabled=1;\"" 2>/dev/null || echo "0")
+    ESCAPED_USERNAME="${USERNAME//\'/''}"
+    ESCAPED_DOMAIN="${DOMAIN//\'/''}"
+    USER_EXISTS=$(docker exec "$SMTP_CONTAINER" sqlite3 /app/data/databases/shared.db "SELECT COUNT(*) FROM users u INNER JOIN domains d ON u.domain_id = d.id WHERE u.username='${ESCAPED_USERNAME}' AND d.domain='${ESCAPED_DOMAIN}' AND u.enabled=1;" 2>/dev/null || echo "0")
     if [ "$USER_EXISTS" != "0" ]; then
         echo -e "${YELLOW}⚠ User ${EMAIL} already exists. Skipping.${NC}"
         continue
