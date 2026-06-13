@@ -50,54 +50,86 @@ class SMTPLoadTester(User):
         # Also check for errors during connection that contain '421'
         error_str = str(exception).lower()
         return '421' in error_str or 'too many connections' in error_str
-    
+
+    def _build_attachment_part(self, attachment):
+        """Build and return a MIMEBase attachment part if it fits within size limits."""
+        if not os.path.exists(attachment['path']):
+            return None
+            
+        file_size = os.path.getsize(attachment['path'])
+
+        # Skip attachment if it exceeds configured limit
+        # Note: Base64 encoding adds ~33% overhead to the size
+        if file_size > self.config.MAX_ATTACHMENT_SIZE_BYTES:
+            logger.warning(
+                "Skipping attachment %s: size %sMB exceeds %sMB limit",
+                attachment['path'],
+                file_size // (1024 * 1024),
+                self.config.MAX_ATTACHMENT_SIZE_MB
+            )
+            return None
+            
+        with open(attachment['path'], "rb") as attachment_file:
+            part = MIMEBase('application', 'octet-stream')
+            part.set_payload(attachment_file.read())
+
+        encoders.encode_base64(part)
+        part.add_header(
+            'Content-Disposition',
+            f'attachment; filename= {os.path.basename(attachment["path"])}'
+        )
+        return part
+
+    def _fire_telemetry(self, name, start_time, response_length=0, exception=None):
+        """Fire telemetry event for SMTP request."""
+        response_time = (time.time() - start_time) * 1000
+
+        if exception is None:
+            self.environment.events.request.fire(
+                request_type="SMTP",
+                name=name,
+                response_time=response_time,
+                response_length=response_length,
+                exception=None
+            )
+        else:
+            if self._is_rate_limit_error(exception):
+                logger.info(f"SMTP rate limit hit (expected): {exception}")
+                self.environment.events.request.fire(
+                    request_type="SMTP",
+                    name=f"{name}_rate_limited",
+                    response_time=response_time,
+                    response_length=0,
+                    exception=None
+                )
+            else:
+                self.environment.events.request.fire(
+                    request_type="SMTP",
+                    name=name,
+                    response_time=response_time,
+                    response_length=0,
+                    exception=exception
+                )
+
     def _connect_smtp(self):
         """Establish SMTP connection"""
         start_time = time.time()
         server = None
-        
+
         try:
             if self.config.USE_TLS:
                 server = smtplib.SMTP(self.config.SMTP_SERVER, self.config.SMTP_PORT)
                 server.starttls()
             else:
                 server = smtplib.SMTP(self.config.SMTP_SERVER, self.config.SMTP_PORT)
-            
+
             server.login(self.user_account['username'], self.user_account['password'])
-            
-            response_time = (time.time() - start_time) * 1000
-            self.environment.events.request.fire(
-                request_type="SMTP",
-                name="connect",
-                response_time=response_time,
-                response_length=0,
-                exception=None
-            )
+
+            self._fire_telemetry("connect", start_time)
             return server
-            
+
         except Exception as e:
-            response_time = (time.time() - start_time) * 1000
-            
-            # Check if this is a rate limit error (expected during load testing)
-            if self._is_rate_limit_error(e):
-                logger.info(f"SMTP rate limit hit (expected): {e}")
-                # Report as success with a special marker
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="connect_rate_limited",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=None  # Don't treat as failure
-                )
-            else:
-                # Real error - report as failure
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="connect",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=e
-                )
+            self._fire_telemetry("connect", start_time, exception=e)
             
             if server:
                 try:
@@ -127,36 +159,10 @@ class SMTPLoadTester(User):
             server.send_message(msg)
             server.quit()
             
-            response_time = (time.time() - start_time) * 1000
-            self.environment.events.request.fire(
-                request_type="SMTP",
-                name="send_text",
-                response_time=response_time,
-                response_length=len(content['body']),
-                exception=None
-            )
+            self._fire_telemetry("send_text", start_time, response_length=len(content['body']))
             
         except Exception as e:
-            response_time = (time.time() - start_time) * 1000
-            
-            # Check if this is a rate limit error
-            if self._is_rate_limit_error(e):
-                logger.info(f"SMTP rate limit hit during send (expected): {e}")
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="send_text_rate_limited",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=None  # Don't treat as failure
-                )
-            else:
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="send_text",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=e
-                )
+            self._fire_telemetry("send_text", start_time, exception=e)
             
             if server:
                 try:
@@ -188,36 +194,10 @@ class SMTPLoadTester(User):
             server.send_message(msg)
             server.quit()
             
-            response_time = (time.time() - start_time) * 1000
-            self.environment.events.request.fire(
-                request_type="SMTP",
-                name="send_html",
-                response_time=response_time,
-                response_length=len(content['body']),
-                exception=None
-            )
+            self._fire_telemetry("send_html", start_time, response_length=len(content['body']))
             
         except Exception as e:
-            response_time = (time.time() - start_time) * 1000
-            
-            # Check if this is a rate limit error
-            if self._is_rate_limit_error(e):
-                logger.info(f"SMTP rate limit hit during send (expected): {e}")
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="send_html_rate_limited",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=None  # Don't treat as failure
-                )
-            else:
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="send_html",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=e
-                )
+            self._fire_telemetry("send_html", start_time, exception=e)
             
             if server:
                 try:
@@ -247,62 +227,18 @@ class SMTPLoadTester(User):
             # Add body
             msg.attach(MIMEText(content['body'], 'html'))
             
-            # Add attachment with size check (enforced by config)
-            if os.path.exists(attachment['path']):
-                file_size = os.path.getsize(attachment['path'])
-                
-                # Skip attachment if it exceeds configured limit
-                # Note: Base64 encoding adds ~33% overhead to the size
-                if file_size > self.config.MAX_ATTACHMENT_SIZE_BYTES:
-                    logger.warning(
-                        f"Skipping attachment {attachment['path']}: "
-                        f"size {file_size//(1024*1024)}MB exceeds {self.config.MAX_ATTACHMENT_SIZE_MB}MB limit"
-                    )
-                else:
-                    with open(attachment['path'], "rb") as attachment_file:
-                        part = MIMEBase('application', 'octet-stream')
-                        part.set_payload(attachment_file.read())
-                    
-                    encoders.encode_base64(part)
-                    part.add_header(
-                        'Content-Disposition',
-                        f'attachment; filename= {os.path.basename(attachment["path"])}'
-                    )
-                    msg.attach(part)
+            # Add attachment using helper
+            attachment_part = self._build_attachment_part(attachment)
+            if attachment_part:
+                msg.attach(attachment_part)
             
             server.send_message(msg)
             server.quit()
             
-            response_time = (time.time() - start_time) * 1000
-            self.environment.events.request.fire(
-                request_type="SMTP",
-                name="send_attachment",
-                response_time=response_time,
-                response_length=len(content['body']),
-                exception=None
-            )
+            self._fire_telemetry("send_attachment", start_time, response_length=len(content['body']))
             
         except Exception as e:
-            response_time = (time.time() - start_time) * 1000
-            
-            # Check if this is a rate limit error
-            if self._is_rate_limit_error(e):
-                logger.info(f"SMTP rate limit hit during send (expected): {e}")
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="send_attachment_rate_limited",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=None  # Don't treat as failure
-                )
-            else:
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="send_attachment",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=e
-                )
+            self._fire_telemetry("send_attachment", start_time, exception=e)
             
             if server:
                 try:
@@ -336,36 +272,10 @@ class SMTPLoadTester(User):
             
             server.quit()
             
-            response_time = (time.time() - start_time) * 1000
-            self.environment.events.request.fire(
-                request_type="SMTP",
-                name="send_bulk",
-                response_time=response_time,
-                response_length=num_emails,
-                exception=None
-            )
+            self._fire_telemetry("send_bulk", start_time, response_length=num_emails)
             
         except Exception as e:
-            response_time = (time.time() - start_time) * 1000
-            
-            # Check if this is a rate limit error
-            if self._is_rate_limit_error(e):
-                logger.info(f"SMTP rate limit hit during bulk send (expected): {e}")
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="send_bulk_rate_limited",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=None  # Don't treat as failure
-                )
-            else:
-                self.environment.events.request.fire(
-                    request_type="SMTP",
-                    name="send_bulk",
-                    response_time=response_time,
-                    response_length=0,
-                    exception=e
-                )
+            self._fire_telemetry("send_bulk", start_time, exception=e)
             
             if server:
                 try:
