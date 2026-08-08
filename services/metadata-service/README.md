@@ -63,13 +63,28 @@ The service sends this JSON every 60 seconds:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `EXTERNAL_API_URL` | Yes | - | Super Platform endpoint URL |
-| `API_KEY` | Yes* | - | API key for authentication |
+| `API_KEY` | Yes | - | API key required on `POST /api/results` |
+| `ALLOW_UNAUTHENTICATED` | No | false | Escape hatch, see below |
 | `PUSH_INTERVAL_SECONDS` | No | 60 | Heartbeat frequency |
 | `ENABLE_PUSH_SERVICE` | No | true | Enable/disable heartbeat |
 | `PORT` | No | 8888 | Service port |
 | `CLAMAV_DB_PATH` | No | /var/lib/clamav | ClamAV database location |
 
-*Required for receiving results from Super Platform
+### Authentication
+
+`API_KEY` is mandatory. The service **refuses to start** when it is unset or
+empty, rather than serving `/api/results` without authentication:
+
+```
+Invalid configuration: API_KEY is not set: /api/results would accept requests
+from anyone able to reach this service. Set API_KEY to a secret value, or set
+ALLOW_UNAUTHENTICATED=true to run without authentication on purpose
+```
+
+Setting `ALLOW_UNAUTHENTICATED=true` disables the check and leaves
+`/api/results` open to anyone who can reach the port. It exists for throwaway
+local development only; never set it on a deployment reachable from a network
+you do not control.
 
 ## API Endpoints
 
@@ -143,6 +158,9 @@ go build -o metadata-service main.go
 **Authentication errors?**
 - Verify `API_KEY` matches between client and server
 - Include `X-API-Key` header in requests
+
+**Service exits with "Invalid configuration"?**
+- `API_KEY` is empty. Set it in `.env` (see [Authentication](#authentication))
 
 ## More Information
 

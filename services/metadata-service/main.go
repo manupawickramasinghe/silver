@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -35,21 +37,22 @@ func sanitizeForLog(s string) string {
 
 // Configuration
 type Config struct {
-	Port              string
-	ClamAVDBPath      string
-	ExternalAPIURL    string
-	PushInterval      time.Duration
-	EnablePushService bool
-	APIKey            string
-	InstanceID        string
+	Port                 string
+	ClamAVDBPath         string
+	ExternalAPIURL       string
+	PushInterval         time.Duration
+	EnablePushService    bool
+	APIKey               string
+	AllowUnauthenticated bool
+	InstanceID           string
 }
 
 // SuperPlatformHeartbeat represents the heartbeat payload for Super Platform
 type SuperPlatformHeartbeat struct {
-	Timestamp           string `json:"timestamp"`
-	InstanceID          string `json:"instance_id"`
-	SignatureVersion    string `json:"signature_version"`
-	SignatureUpdatedAt  string `json:"signature_updated_at"`
+	Timestamp          string `json:"timestamp"`
+	InstanceID         string `json:"instance_id"`
+	SignatureVersion   string `json:"signature_version"`
+	SignatureUpdatedAt string `json:"signature_updated_at"`
 }
 
 // SuperPlatformResult represents data received from Super Platform
@@ -63,14 +66,26 @@ var config Config
 
 func init() {
 	config = Config{
-		Port:              getEnv("PORT", "8888"),
-		ClamAVDBPath:      getEnv("CLAMAV_DB_PATH", "/var/lib/clamav"),
-		ExternalAPIURL:    getEnv("EXTERNAL_API_URL", ""),
-		PushInterval:      time.Duration(getEnvAsInt("PUSH_INTERVAL_SECONDS", 60)) * time.Second,
-		EnablePushService: getEnv("ENABLE_PUSH_SERVICE", "true") == "true",
-		APIKey:            getEnv("API_KEY", ""),
-		InstanceID:        getServerIP(), // Use server IP as instance ID
+		Port:                 getEnv("PORT", "8888"),
+		ClamAVDBPath:         getEnv("CLAMAV_DB_PATH", "/var/lib/clamav"),
+		ExternalAPIURL:       getEnv("EXTERNAL_API_URL", ""),
+		PushInterval:         time.Duration(getEnvAsInt("PUSH_INTERVAL_SECONDS", 60)) * time.Second,
+		EnablePushService:    getEnv("ENABLE_PUSH_SERVICE", "true") == "true",
+		APIKey:               getEnv("API_KEY", ""),
+		AllowUnauthenticated: getEnv("ALLOW_UNAUTHENTICATED", "false") == "true",
+		InstanceID:           getServerIP(), // Use server IP as instance ID
 	}
+}
+
+// validateConfig rejects configurations that would expose protected endpoints
+// without authentication. It is checked once at startup so a misconfigured
+// deployment fails immediately instead of serving unauthenticated traffic.
+func validateConfig(c Config) error {
+	if c.APIKey == "" && !c.AllowUnauthenticated {
+		return errors.New("API_KEY is not set: /api/results would accept requests from anyone able to reach this service. " +
+			"Set API_KEY to a secret value, or set ALLOW_UNAUTHENTICATED=true to run without authentication on purpose")
+	}
+	return nil
 }
 
 func getEnv(key, defaultValue string) string {
@@ -108,7 +123,7 @@ func getServerIP() string {
 func getClamAVSignatureInfo() (version int, updatedAt time.Time, err error) {
 	// Look for daily.cvd or daily.cld
 	dailyPath := filepath.Join(config.ClamAVDBPath, "daily.cvd")
-	
+
 	// Check if daily.cvd exists, otherwise try daily.cld
 	info, err := os.Stat(dailyPath)
 	if os.IsNotExist(err) {
@@ -118,17 +133,17 @@ func getClamAVSignatureInfo() (version int, updatedAt time.Time, err error) {
 			return 0, time.Time{}, fmt.Errorf("daily.cvd/cld not found: %w", err)
 		}
 	}
-	
+
 	// Get modification time
 	updatedAt = info.ModTime()
-	
+
 	// Try to read CVD header to get version
 	file, err := os.Open(dailyPath)
 	if err != nil {
 		return 0, updatedAt, fmt.Errorf("failed to open %s: %w", dailyPath, err)
 	}
 	defer file.Close()
-	
+
 	header := make([]byte, 512)
 	if n, err := file.Read(header); err == nil && n > 0 {
 		// CVD header format: ClamAV-VDB:build_time:version:...
@@ -140,7 +155,7 @@ func getClamAVSignatureInfo() (version int, updatedAt time.Time, err error) {
 			}
 		}
 	}
-	
+
 	return version, updatedAt, nil
 }
 
@@ -150,13 +165,13 @@ func createHeartbeatPayload() (*SuperPlatformHeartbeat, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get ClamAV signature info: %w", err)
 	}
-	
+
 	// Determine file name (daily.cvd or daily.cld)
 	fileName := "daily.cvd"
 	if _, err := os.Stat(filepath.Join(config.ClamAVDBPath, "daily.cvd")); os.IsNotExist(err) {
 		fileName = "daily.cld"
 	}
-	
+
 	return &SuperPlatformHeartbeat{
 		Timestamp:          time.Now().UTC().Format(time.RFC3339),
 		InstanceID:         config.InstanceID,
@@ -213,7 +228,7 @@ func startPeriodicPush() {
 	ticker := time.NewTicker(config.PushInterval)
 	go func() {
 		log.Printf("Starting periodic metadata push service (interval: %v)", config.PushInterval)
-		
+
 		// Push immediately on startup
 		if err := pushMetadataToExternalAPI(); err != nil {
 			log.Printf("Error pushing metadata on startup: %v", err)
@@ -242,8 +257,9 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 // apiKeyAuthMiddleware validates the API key for protected endpoints
 func apiKeyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// An empty API key only reaches this point when ALLOW_UNAUTHENTICATED
+		// was set explicitly; validateConfig refuses to start otherwise.
 		if config.APIKey == "" {
-			log.Println("Warning: API_KEY not configured, skipping authentication")
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -255,17 +271,19 @@ func apiKeyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			json.NewEncoder(w).Encode(map[string]string{
 				"error": "Missing API key",
 			})
-			log.Printf("Unauthorized request to %s: missing API key", r.URL.Path)
+			log.Printf("Unauthorized request to %s: missing API key", sanitizeForLog(r.URL.Path))
 			return
 		}
 
-		if apiKey != config.APIKey {
+		// Constant-time comparison: a length mismatch yields 0, same as a
+		// mismatched key, so no information leaks through timing.
+		if subtle.ConstantTimeCompare([]byte(apiKey), []byte(config.APIKey)) != 1 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			json.NewEncoder(w).Encode(map[string]string{
 				"error": "Invalid API key",
 			})
-			log.Printf("Unauthorized request to %s: invalid API key", r.URL.Path)
+			log.Printf("Unauthorized request to %s: invalid API key", sanitizeForLog(r.URL.Path))
 			return
 		}
 
@@ -288,7 +306,7 @@ func receiveSuperPlatformResultHandler(w http.ResponseWriter, r *http.Request) {
 	// TODO: Process the result from Super Platform
 	// For now, just log and acknowledge
 	log.Printf("Received result from Super Platform: status=%s, timestamp=%s", sanitizeForLog(result.Status), sanitizeForLog(result.Timestamp))
-	
+
 	// Sanitize data for logging by converting to JSON string
 	dataJSON, err := json.Marshal(result.Data)
 	if err == nil {
@@ -340,11 +358,15 @@ func main() {
 	log.Printf("Instance ID: %s", config.InstanceID)
 	log.Printf("Push Interval: %v", config.PushInterval)
 	log.Printf("Push Service Enabled: %v", config.EnablePushService)
-	
+
+	if err := validateConfig(config); err != nil {
+		log.Fatalf("Invalid configuration: %v", err)
+	}
+
 	if config.APIKey != "" {
 		log.Println("API Key authentication enabled")
 	} else {
-		log.Println("Warning: API Key authentication not configured")
+		log.Println("SECURITY WARNING: ALLOW_UNAUTHENTICATED=true, /api/results accepts unauthenticated requests")
 	}
 
 	// Start periodic push service
@@ -362,8 +384,17 @@ func main() {
 
 	// Start server
 	addr := "0.0.0.0:" + config.Port
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
 	log.Printf("Server listening on %s", addr)
-	if err := http.ListenAndServe(addr, handler); err != nil {
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
 }
