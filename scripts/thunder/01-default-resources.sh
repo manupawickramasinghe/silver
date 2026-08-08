@@ -22,6 +22,33 @@ done
 SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")"
 source "${SCRIPT_DIR}/common.sh"
 
+# ============================================================================
+# Required Configuration
+# ============================================================================
+#
+# The admin user created below holds the "system" permission and Thunder is the
+# identity provider for every IMAP/SMTP login in the stack, so there is no safe
+# default password to fall back to. Fail here — before any resource is created —
+# rather than silently provisioning a well-known credential.
+: "${THUNDER_ADMIN_PASSWORD:?must be set to a strong secret (e.g. openssl rand -base64 24); refusing to bootstrap Thunder with a default admin password}"
+
+# Escape a value so it can be interpolated into a JSON string literal.
+#
+# jq is deliberately not used: the Thunder runtime image this script executes in
+# is Alpine-based and does not ship jq (which is also why the rest of this file
+# parses responses with grep/sed). Handles the characters JSON forbids raw in a
+# string; values here are credentials and IDs, which are not expected to contain
+# other C0 control characters.
+json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"      # backslash first, so the escapes added below survive
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    s="${s//$'\t'/\\t}"
+    printf '%s' "$s"
+}
+
 log_info "Creating default Thunder resources..."
 echo ""
 
@@ -176,18 +203,24 @@ echo ""
 
 log_info "Creating admin user..."
 
-# Read admin credentials from environment variables with defaults
+# Read admin credentials from the environment. The username may default; the
+# password is mandatory and was already validated at the top of this script.
 ADMIN_USERNAME="${THUNDER_ADMIN_USERNAME:-admin}"
-ADMIN_PASSWORD="${THUNDER_ADMIN_PASSWORD:-admin}"
+ADMIN_PASSWORD="${THUNDER_ADMIN_PASSWORD}"
 
 log_info "Using admin username: ${ADMIN_USERNAME}"
 
-RESPONSE=$(thunder_api_call POST "/users" '{
+# Build the payload in a variable and pass it as a single quoted argument.
+# Splicing the values into a single-quoted literal instead broke the payload
+# into multiple words for any password containing whitespace, so thunder_api_call
+# received only the first fragment and posted truncated JSON.
+ADMIN_PAYLOAD=$(cat <<EOF
+{
   "type": "Person",
-  "ouId": "'${DEFAULT_OU_ID}'",
+  "ouId": "$(json_escape "${DEFAULT_OU_ID}")",
   "attributes": {
-    "username": "'${ADMIN_USERNAME}'",
-    "password": "'${ADMIN_PASSWORD}'",
+    "username": "$(json_escape "${ADMIN_USERNAME}")",
+    "password": "$(json_escape "${ADMIN_PASSWORD}")",
     "sub": "admin",
     "email": "admin@thunder.dev",
     "email_verified": true,
@@ -198,7 +231,11 @@ RESPONSE=$(thunder_api_call POST "/users" '{
     "phone_number": "+12345678920",
     "phone_number_verified": true
   }
-}')
+}
+EOF
+)
+
+RESPONSE=$(thunder_api_call POST "/users" "${ADMIN_PAYLOAD}")
 
 HTTP_CODE="${RESPONSE: -3}"
 BODY="${RESPONSE%???}"
@@ -206,7 +243,9 @@ BODY="${RESPONSE%???}"
 if [[ "$HTTP_CODE" == "201" ]] || [[ "$HTTP_CODE" == "200" ]]; then
     log_success "Admin user created successfully"
     log_info "Username: ${ADMIN_USERNAME}"
-    log_info "Password: ${ADMIN_PASSWORD}"
+    # The password is deliberately never logged: these logs are retained by the
+    # container runtime and are read back by tooling (see scripts/utils/thunder-auth.sh),
+    # so anything printed here is readable via docker/kubectl logs and log shippers.
 
     # Extract admin user ID
     ADMIN_USER_ID=$(echo "$BODY" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
