@@ -66,9 +66,23 @@ smtpd_tls_key_file = /etc/letsencrypt/live/${MAIL_DOMAIN}/privkey.pem
 smtpd_tls_CAfile = /etc/ssl/certs/ca-certificates.crt
 smtp_tls_note_starttls_offer = yes
 
-# TLS Security Level - 'may' allows opportunistic encryption
-# Use 'encrypt' to enforce TLS for all connections (may break compatibility with old servers)
+# TLS Security Level - 'may' allows opportunistic encryption.
+# This MUST stay 'may' for port 25: inbound mail from foreign MTAs uses
+# opportunistic TLS, and 'encrypt' on 25 would refuse plaintext-only senders
+# and silently drop legitimate inbound mail (RFC 3207 / RFC 8314 both keep
+# port 25 opportunistic). Mandatory TLS belongs on the submission service in
+# master.cf, not here.
 smtpd_tls_security_level = may
+
+# Refuse to advertise SASL AUTH until the session is encrypted.
+# Without this, 'security_level = may' means Postfix offers "AUTH PLAIN LOGIN"
+# in the cleartext EHLO response, so a client whose STARTTLS fails - or one
+# talking to an attacker who strips STARTTLS from the EHLO reply - hands over
+# the user's mailbox password in the clear. This gates AUTH only; it does not
+# make TLS mandatory for mail delivery, so opportunistic TLS on port 25 above
+# is unaffected.
+smtpd_tls_auth_only = yes
+
 smtpd_tls_mandatory_protocols = !SSLv2, !SSLv3, !TLSv1, !TLSv1.1
 smtpd_tls_protocols = !SSLv2, !SSLv3, !TLSv1, !TLSv1.1
 
