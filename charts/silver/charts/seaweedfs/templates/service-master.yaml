@@ -1,0 +1,42 @@
+{{/*
+Master HTTP (9333) + gRPC (19333), split off the S3 Service.
+
+The master API is completely unauthenticated, so keeping it next to the S3
+gateway meant the S3 identity in s3-config.json could be bypassed by any pod that
+could reach the Service. Only `weed shell` uses these ports: the bucket-init Job
+and the helm test. Pair with networkPolicy.enabled to actually restrict who can
+reach them — a separate Service narrows discovery, not reachability.
+
+Headless (clusterIP: None) so `weed shell` resolves straight to the pod and no
+cluster IP exists for unrelated workloads to stumble onto. The StatefulSet's
+governing service stays the S3 one (spec.serviceName), which is unaffected.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "seaweedfs.masterServiceName" . }}
+  labels:
+    {{- include "seaweedfs.labels" . | nindent 4 }}
+    app.kubernetes.io/component: master
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  clusterIP: None
+  ports:
+    - name: master
+      port: {{ .Values.service.masterPort }}
+      targetPort: master
+      protocol: TCP
+    # weed shell (bucket-init Job, helm test) connects over master gRPC.
+    - name: master-grpc
+      port: {{ .Values.service.masterGrpcPort }}
+      targetPort: master-grpc
+      protocol: TCP
+  # The bucket-init Job and test Pod carry these same labels (they have no other
+  # labels available), but they declare no container ports, so the NAMED
+  # targetPorts above exclude them from the EndpointSlice. Same mechanism the S3
+  # Service already relies on.
+  selector:
+    {{- include "seaweedfs.selectorLabels" . | nindent 4 }}

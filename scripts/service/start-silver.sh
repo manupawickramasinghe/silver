@@ -90,19 +90,103 @@ fi
 # ================================
 echo -e "\n${YELLOW}Step 3/3: Starting Docker services${NC}"
 
-# Check and setup SeaweedFS S3 configuration
+# ------------------------------------------------------------------
+# SeaweedFS S3 credentials
+#
+# Two files must always carry the SAME access/secret pair:
+#   seaweedfs/s3-config.json  - the S3 gateway's identity (server side)
+#   seaweedfs/.env            - what Raven authenticates with (client side)
+#
+# These used to be seeded by copying the committed *.example files. Because BOTH
+# sides received the same placeholder the stack worked perfectly, so nobody
+# noticed that every default deployment's mail-attachment store accepted
+# credentials published in this repository. They are now generated on first run
+# and never rotated automatically: rotating the gateway key out from under a
+# populated store would lock Raven out of every attachment already written.
+#
+# NOTE: services/config-scripts/gen-raven-conf.sh performs the same first-run
+# generation (it runs earlier, from setup.sh). Keep the two blocks in sync.
+# ------------------------------------------------------------------
 SEAWEEDFS_CONFIG="${SERVICES_DIR}/seaweedfs/s3-config.json"
-SEAWEEDFS_EXAMPLE="${SERVICES_DIR}/seaweedfs/s3-config.json.example"
+SEAWEEDFS_ENV="${SERVICES_DIR}/seaweedfs/.env"
 
-if [ ! -f "$SEAWEEDFS_CONFIG" ]; then
-	echo "  - SeaweedFS S3 configuration not found. Creating from example..."
-	if [ -f "$SEAWEEDFS_EXAMPLE" ]; then
-		cp "$SEAWEEDFS_EXAMPLE" "$SEAWEEDFS_CONFIG"
-		echo -e "${YELLOW}  ⚠ WARNING: Using example S3 credentials. Update ${SEAWEEDFS_CONFIG} with secure credentials!${NC}"
+# Emit $1 bytes of randomness as lowercase hex. Hex is deliberate: the value is
+# embedded verbatim in JSON, YAML and a .env file, and needs no escaping in any
+# of them.
+rand_hex() {
+	if command -v openssl >/dev/null 2>&1; then
+		openssl rand -hex "$1"
 	else
-		echo -e "${RED}✗ SeaweedFS example configuration not found at ${SEAWEEDFS_EXAMPLE}${NC}"
+		od -An -vtx1 -N "$1" /dev/urandom | tr -d ' \n'
+	fi
+}
+
+if [ -f "$SEAWEEDFS_CONFIG" ] && [ -f "$SEAWEEDFS_ENV" ]; then
+	# Deployments seeded from the old *.example files run on credentials that are
+	# public in this repository.
+	if grep -q 'your-access-key-here\|your-secret-key-here\|REPLACE-ME-GENERATED-ON-FIRST-RUN' "$SEAWEEDFS_CONFIG" "$SEAWEEDFS_ENV"; then
+		echo -e "${RED}✗ SeaweedFS is still configured with the placeholder credentials from the"
+		echo "  committed *.example files. Those values are public in this repository and"
+		echo "  grant Admin/Read/Write on the attachment store to anyone who has read it."
+		echo "  Rotate them: put the SAME new accessKey/secretKey in both"
+		echo -e "  ${SEAWEEDFS_CONFIG} and ${SEAWEEDFS_ENV}, then restart SeaweedFS and Raven.${NC}"
 		exit 1
 	fi
+	echo -e "${GREEN}  ✓ Using existing SeaweedFS S3 credentials${NC}"
+elif [ -f "$SEAWEEDFS_CONFIG" ] || [ -f "$SEAWEEDFS_ENV" ]; then
+	# Only one side exists. Generating a fresh pair would either lock Raven out of
+	# the existing store or hand it credentials the gateway does not know, so stop
+	# rather than guess which file is authoritative.
+	echo -e "${RED}✗ SeaweedFS S3 configuration is incomplete:"
+	echo "    s3-config.json: $([ -f "$SEAWEEDFS_CONFIG" ] && echo present || echo MISSING)"
+	echo "    .env:           $([ -f "$SEAWEEDFS_ENV" ] && echo present || echo MISSING)"
+	echo "  Both files must exist and carry the SAME accessKey/secretKey. Recreate the"
+	echo -e "  missing one, or delete both to start over with a fresh attachment store.${NC}"
+	exit 1
+else
+	echo "  - SeaweedFS S3 credentials not found. Generating a new pair..."
+	S3_ACCESS_KEY="$(rand_hex 12)"
+	S3_SECRET_KEY="$(rand_hex 32)"
+
+	# Subshell so the restrictive umask does not leak; both files hold a live secret.
+	(
+		umask 077
+		cat >"$SEAWEEDFS_CONFIG" <<EOF
+{
+  "identities": [
+    {
+      "name": "raven",
+      "credentials": [
+        {
+          "accessKey": "${S3_ACCESS_KEY}",
+          "secretKey": "${S3_SECRET_KEY}"
+        }
+      ],
+      "actions": [
+        "Admin",
+        "Read",
+        "Write"
+      ]
+    }
+  ]
+}
+EOF
+		cat >"$SEAWEEDFS_ENV" <<EOF
+# SeaweedFS S3 credentials - GENERATED, do not commit.
+# Must stay identical to the credentials in s3-config.json.
+S3_ACCESS_KEY=${S3_ACCESS_KEY}
+S3_SECRET_KEY=${S3_SECRET_KEY}
+
+S3_ENDPOINT=http://seaweedfs-s3:8333
+S3_REGION=us-east-1
+S3_BUCKET=email-attachments
+S3_TIMEOUT=30
+EOF
+	)
+	unset S3_ACCESS_KEY S3_SECRET_KEY
+	echo -e "${GREEN}  ✓ Generated SeaweedFS S3 credentials in ${SEAWEEDFS_CONFIG} and ${SEAWEEDFS_ENV} (mode 0600)${NC}"
+	echo -e "${YELLOW}  ⚠ Raven's config is generated from these values - re-run scripts/setup/setup.sh"
+	echo -e "    (or services/config-scripts/gen-raven-conf.sh) if Raven was configured earlier.${NC}"
 fi
 
 # Start SeaweedFS services first
