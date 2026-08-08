@@ -30,7 +30,8 @@ spec:
             - -c
             - |
               set -u
-              MASTER="{{ include "seaweedfs.serviceName" . }}:{{ .Values.service.masterPort }}"
+              # Master API is on its own headless Service, not the S3 one.
+              MASTER="{{ include "seaweedfs.masterServiceName" . }}:{{ .Values.service.masterPort }}"
               BUCKET="{{ .Values.s3.bucket }}"
               # weed shell talks master gRPC (port+10000) and returns exit 0 even
               # when it did nothing (unreachable master, or SIGTERM'd by timeout),

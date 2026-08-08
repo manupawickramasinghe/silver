@@ -16,7 +16,8 @@ spec:
         - -c
         - |
           set -u
-          MASTER="{{ include "seaweedfs.serviceName" . }}:{{ .Values.service.masterPort }}"
+          # Master API is on its own headless Service, not the S3 one.
+          MASTER="{{ include "seaweedfs.masterServiceName" . }}:{{ .Values.service.masterPort }}"
           BUCKET="{{ .Values.s3.bucket }}"
           # Gate on the bucket appearing in list OUTPUT (weed shell exit codes are
           # unreliable). -s KILL because weed shell traps SIGTERM. Retry to avoid

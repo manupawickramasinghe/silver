@@ -41,10 +41,12 @@ mode: combined
 service:
   # ClusterIP only — internal storage, never publicly exposed.
   type: ClusterIP
-  # S3 gateway port Raven writes to.
+  # S3 gateway port Raven writes to. The only port on the seaweedfs-s3 Service.
   s3Port: 8333
-  # Master HTTP port. Exposed on the internal Service for the bucket-init Job /
-  # helm test. Not consumed by Raven.
+  # Master HTTP port. On its own headless Service (<release>-seaweedfs-master)
+  # for the bucket-init Job / helm test, NOT on the S3 Service: the master API is
+  # unauthenticated and would otherwise bypass the S3 identity. Not consumed by
+  # Raven.
   masterPort: 9333
   # Master gRPC port (= masterPort + 10000). `weed shell` actually talks gRPC,
   # so this MUST be reachable or shell commands silently no-op. Filer/volume
@@ -53,16 +55,45 @@ service:
   masterGrpcPort: 19333
   annotations: {}
 
-# S3 credentials + identity. Prefer setting global.s3.* at the umbrella so the
-# raven client uses the same values. secretKey "" => derived deterministically
-# from the release name (identical in both charts, so no cross-lookup needed);
-# override global.s3.secretKey in prod.
+# S3 credentials + identity.
+#
+# secretKey "" => this chart GENERATES a random key on first install and reuses
+# whatever is already in the cluster thereafter (a `lookup` guard reads the
+# existing Secret), so upgrades never rotate it. Raven does not recompute the key
+# — it reads this chart's Secret via secretKeyRef. It used to be derived from the
+# release name so both charts could compute it, which made every default
+# install's S3 admin key offline-computable by anyone.
+#
+# Set global.s3.secretKey explicitly in prod, and always for GitOps /
+# `helm template | kubectl apply`, where `lookup` sees no cluster and each render
+# would emit a new random key.
 s3:
   accessKey: raven
   secretKey: ""
   bucket: email-attachments
   region: us-east-1
   identityName: raven
+
+# Ingress restriction for the attachment store. Off by default to match the
+# opendkim subchart, but recommended: without it any pod in the cluster can reach
+# the UNAUTHENTICATED master API on 9333/19333 and read or delete raw attachment
+# blobs, bypassing the S3 credential entirely.
+networkPolicy:
+  enabled: false
+  # app.kubernetes.io/name of the S3 client allowed to reach 8333. Must match the
+  # raven subchart's pod labels (its nameOverride, default the chart name).
+  clientPodName: raven
+  # Extra peers allowed to reach 8333, ADDED to the raven selector above (not a
+  # replacement, so enabling the policy cannot accidentally lock raven out).
+  # Example:
+  # allowedIngressFrom:
+  #   - namespaceSelector:
+  #       matchLabels:
+  #         kubernetes.io/metadata.name: mail
+  #     podSelector:
+  #       matchLabels:
+  #         app.kubernetes.io/name: some-other-client
+  allowedIngressFrom: []
 
 persistence:
   # Empty => cluster default StorageClass. Clusters without a default
