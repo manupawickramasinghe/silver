@@ -43,10 +43,32 @@ kubectl get namespace cert-manager >/dev/null 2>&1 \
 
 # --- Cloudflare Secret --------------------------------------------------------
 info "Creating Cloudflare API token secret..."
-kubectl create secret generic cloudflare-api-token \
-  --from-literal=api-token="$CF_TOKEN" \
-  --namespace cert-manager \
-  --dry-run=client -o yaml | kubectl apply -f -
+
+# Never pass the token as a command-line argument: argv is world-readable via
+# `ps auxww` for the lifetime of the process and is commonly captured by audit
+# logging and shell history. A Cloudflare DNS-edit token allows full zone
+# takeover, so hand it to kubectl on stdin instead.
+#
+# `printf` is a bash builtin, so the token is not exposed in any argv here
+# either. Base64-encoding it into `data:` (rather than writing the raw value to
+# `stringData:`) means the value interpolated into the heredoc is always plain
+# [A-Za-z0-9+/=], which needs no YAML quoting or escaping regardless of what
+# characters the token itself contains. `tr -d '\n'` strips base64's line
+# wrapping portably (`base64 -w0` is GNU-only).
+CF_TOKEN_B64="$(printf '%s' "$CF_TOKEN" | base64 | tr -d '\n')"
+
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cloudflare-api-token
+  namespace: cert-manager
+type: Opaque
+data:
+  api-token: "${CF_TOKEN_B64}"
+EOF
+
+unset CF_TOKEN_B64
 
 info "Secret created: cloudflare-api-token (namespace: cert-manager)"
 
