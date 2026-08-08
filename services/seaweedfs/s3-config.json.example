@@ -4,8 +4,8 @@
       "name": "raven",
       "credentials": [
         {
-          "accessKey": "your-access-key-here",
-          "secretKey": "your-secret-key-here"
+          "accessKey": "REPLACE-ME-GENERATED-ON-FIRST-RUN",
+          "secretKey": "REPLACE-ME-GENERATED-ON-FIRST-RUN"
         }
       ],
       "actions": [
