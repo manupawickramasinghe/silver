@@ -295,6 +295,10 @@ context.verify_mode = ssl.CERT_NONE
 
 `smtp_tester.py:61-64` has the same class of problem: `server.starttls()` with no `context` uses the *unverified* stdlib context.
 
+Proven behaviourally rather than by inspection. Against a self-signed endpoint, the original code completed the handshake and the untrusted server read the literal `LOGIN` and `AUTH PLAIN` credentials; after the fix both raise `ssl.SSLCertVerificationError` and the server sees only `TLSV1_ALERT_UNKNOWN_CA`. The unused `TIMEOUT` was confirmed the same way: against a black-hole port the original never returned and had to be killed, the fix raises at 30.1 s.
+
+**One thing a reviewer should weigh:** an opt-in `MAIL_TLS_INSECURE=1` was retained, so `CERT_NONE` still appears in `config.py` inside that guarded branch. The reasoning is that a dev server with a self-signed certificate is a legitimate target for this suite, and removing the capability outright invites someone to re-add unguarded `CERT_NONE` later. It defaults off, logs a warning naming the host at import, and is documented. Deleting it instead is a defensible alternative call.
+
 ### H-10 · Rspamd chart hardcodes the release name, breaking any release not named `silver`
 **Status:** Fixed — *fix: require an Rspamd controller password and repair the NetworkPolicy selector*
 `charts/silver/charts/rspamd/values.yaml:65-73`
