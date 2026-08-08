@@ -22,12 +22,14 @@ Severity reflects impact on a production mail deployment, not exploitability in 
 | Severity | Count | Fixed | Open |
 |---|---:|---:|---:|
 | Critical | 7 | 7 | 0 |
-| High | 20 | 14 | 6 |
+| High | 22 | 16 | 6 |
 | Medium | 22 | 3 | 19 |
 | Low | 11 | 1 | 10 |
-| **Total** | **60** | **25** | **35** |
+| **Total** | **62** | **27** | **35** |
 
-Five of these (C-7, H-19, H-20, and the corrections to C-1, H-7 and H-12) were found *while fixing* the original findings, not during the audit pass. They are marked as such in place. C-7 in particular was hidden behind C-1: the render aborted before the broken result could be observed.
+Seven of these (C-7, H-19, H-20, H-21, H-22, and the corrections to C-1, H-7 and H-12) were found *while fixing* the original findings, not during the audit pass. They are marked as such in place.
+
+Two are worth singling out because they show the audit alone was not enough. **C-7** was hidden behind C-1: the render aborted before the broken result could be observed. **H-21** invalidated the prescribed fix for C-5 — the Rspamd image never reads the environment variable the chart injects, so making that value mandatory would have produced a chart that looks secured and is not. Both were only findable by building the fix and testing it.
 
 The five findings a reviewer should look at first:
 
@@ -350,6 +352,28 @@ No `allowPrivilegeEscalation: false`, no `capabilities.drop: [ALL]`, no `readOnl
 
 *Positive finding:* there are **no** Roles or ClusterRoles anywhere in the tree, so there is no over-permissive RBAC to report.
 
+### H-21 · The Rspamd chart's password mechanism is inert — the image never reads it
+**Status:** Fixed — *fix: require an Rspamd controller password and repair the NetworkPolicy selector*
+`charts/silver/charts/rspamd/templates/secret-webui.yaml`, `templates/statefulset.yaml:101`
+
+Found while fixing C-5, and it invalidates the fix as originally specified.
+
+The chart creates a Secret from `webui.password` and injects it as the `RSPAMD_PASSWORD` environment variable. **The `rspamd/rspamd` image does not read that variable.** Rspamd takes its controller password from `worker-controller.inc`, not the environment.
+
+So the entire credential path was decorative: an operator could set `webui.password`, see it correctly rendered into a Secret and mounted into the pod, and the controller would still reject that password — while continuing to serve whatever its built-in defaults allow. Simply making the value mandatory, as C-5 called for, would have produced a chart that *looks* secured and is not.
+
+The Secret now carries the full controller worker configuration and is mounted over `/etc/rspamd/local.d/worker-controller.inc`. Verified against a live `rspamd/rspamd:4.1.4` container: 401 with no or wrong password, 200 with the generated one.
+
+A related trap in the same area: a `worker-controller.inc` whose mode the in-container user cannot read causes Rspamd to **skip the file silently** and fall back to built-in defaults — the exact unauthenticated state the configuration exists to prevent. The generator now pins the mode and validates the hash shape.
+
+### H-22 · The Rspamd NetworkPolicy has no egress rule for map downloads
+**Status:** Fixed — *fix: require an Rspamd controller password and repair the NetworkPolicy selector*
+`charts/silver/charts/rspamd/templates/networkpolicy.yaml`
+
+Second way the same unconditional policy degraded filtering, independent of H-1. The egress rules cover Redis, Unbound and DNS but not the outbound HTTPS Rspamd uses to fetch its maps and rule updates. Enabling the policy therefore left Rspamd running on stale rules with no error surfaced.
+
+Because this made an on-by-default policy actively harmful in two distinct ways, the corrected policy is **opt-in** (`networkPolicy.enabled: false`, matching the opendkim chart) rather than on by default. That is a deliberate weakening of a default in exchange for not silently breaking mail filtering on clusters whose pod labels or CNI differ; it deserves a maintainer's opinion.
+
 ### H-19 · `transfer` destroys a role assignment and reports that nothing happened
 **Status:** Fixed — *fix: close command and SQL injection in the user role management scripts*
 `scripts/user/manage_roles.sh` (`remove_user_from_role`)
@@ -603,6 +627,12 @@ Six High-severity findings and most Medium/Low items are recorded but not fixed 
 ## What was verified, and what was not
 
 Verification was **static**: `helm lint` and `helm template` against the rendered manifests, `shellcheck` and `bash -n`, `postconf` parsing of the generated Postfix configuration, `go vet` / `go build`, Python compilation and linting, `docker compose config`, and targeted container-based tests proving specific injection vectors are closed.
+
+Some behaviour *was* exercised against real containers where that was possible: the injection proofs ran against a stand-in on the Postfix image's base, the corrected Rspamd controller configuration was checked against live `rspamd/rspamd:4.1.4` (401 without a password, 200 with), and raven's generated configuration was produced by running the real init-container script against the `ghcr.io/lsflk/raven` image.
+
+The fixes were also **integration-tested together**: all ten branches merge into one tree with no conflicts, and the combined result passes `helm lint`, `helm template` and `docker compose config`, with the cross-cutting invariants still holding — one certificate under the name Postfix mounts, Thunder's `public_url` matching raven's `oauth_issuer_url`, and ports 24/12345/9100/8888/8333 absent from the published set.
+
+**A trap for anyone repeating this.** `helm dependency build` packages the `file://` subcharts into `charts/silver/charts/*.tgz`, and Helm renders those tarballs. Edit a subchart without rebuilding and you will verify against stale content and conclude your fix works when it does not. Delete the `*-0.1.0.tgz` files before re-rendering, or rebuild every time. (The integration results above were confirmed both ways: rendering with and without the packaged subcharts differs only in the deliberately-random generated secrets.)
 
 Not exercised: no Kubernetes cluster was available, so `helm install`, `lookup`-based Secret reuse across upgrades, and NetworkPolicy enforcement were not tested against a live API server. The Compose stack was not brought up end-to-end — it requires public DNS, a routable IP, and Let's Encrypt issuance. Mail flow, DKIM signing and IMAP delivery were therefore not tested against a running deployment.
 
