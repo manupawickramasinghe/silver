@@ -4,7 +4,7 @@ description: Single-node SeaweedFS providing S3-compatible blob storage for Rave
 type: application
 version: 0.1.0
 # Tracks the chrislusf/seaweedfs image; compose uses :latest, pin a digest/tag in prod.
-appVersion: "latest"
+appVersion: "4.41"
 keywords:
   - seaweedfs
   - s3
