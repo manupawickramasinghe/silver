@@ -7,11 +7,11 @@ metadata:
 data:
   options.inc: |
     dns {
-      nameserver = ["{{ .Values.dependencies.unbound.host }}"];
+      nameserver = ["{{ include "rspamd.unboundHost" . }}"];
       timeout = 1s;
       sockets = 16;
     }
 
   redis.conf: |
-    servers = "{{ .Values.dependencies.redis.host }}:{{ .Values.dependencies.redis.port }}";
+    servers = "{{ include "rspamd.redisHost" . }}:{{ .Values.dependencies.redis.port }}";
     timeout = 1s;
