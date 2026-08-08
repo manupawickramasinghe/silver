@@ -1,22 +1,34 @@
 {{- if .Values.global.tls.enabled }}
-{{- $domains := .Values.global.tls.domains | default (list (include "silver.mailHostname" .) (include "silver.domain" .)) }}
-{{- range $domains }}
----
+{{- /*
+ONE Certificate carrying every name as a SAN, issued into the Secret that postfix
+and raven mount (silver.tlsSecretName).
+
+This previously ranged over global.tls.domains emitting one single-name Certificate
+per entry, each into its own `<name>-tls` Secret. That contradicted the documented
+meaning of the value ("override only to add extra SANs") in two damaging ways:
+setting it replaced the mail.<domain> cert instead of extending it, so the Secret
+postfix mounts stopped being created and the pod hung in ContainerCreating; and it
+multiplied ACME issuance against the 5/week duplicate-certificate limit that the
+comment on global.tls.issuer exists to protect.
+*/}}
+{{- $default := list (include "silver.mailHostname" .) (include "silver.domain" .) }}
+{{- $domains := concat $default (.Values.global.tls.domains | default list) | uniq }}
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: {{ . | replace "." "-" }}-tls
-  namespace: {{ $.Release.Namespace }}
+  name: {{ include "silver.tlsSecretName" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "silver.labels" $ | nindent 4 }}
+    {{- include "silver.labels" . | nindent 4 }}
 spec:
-  secretName: {{ . | replace "." "-" }}-tls
+  secretName: {{ include "silver.tlsSecretName" . }}
   issuerRef:
-    name: {{ $.Values.global.tls.issuer }}
+    name: {{ .Values.global.tls.issuer }}
     kind: ClusterIssuer
-  commonName: {{ . }}
+  commonName: {{ include "silver.mailHostname" . }}
   dnsNames:
-    - {{ . }}
-  renewBefore: {{ $.Values.global.tls.renewBefore | default "720h" }}
-{{- end }}
+    {{- range $domains }}
+    - {{ . | quote }}
+    {{- end }}
+  renewBefore: {{ .Values.global.tls.renewBefore | default "720h" }}
 {{- end }}

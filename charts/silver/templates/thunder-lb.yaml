@@ -1,4 +1,4 @@
-{{- if .Values.thunder.enabled }}
+{{- if and .Values.thunder.enabled ((((.Values.global).thunderLb).enabled) | default true) }}
 {{- /*
 LoadBalancer Service exposing Thunder on the node's :8090.
 
@@ -20,6 +20,24 @@ metadata:
     {{- include "silver.labels" . | nindent 4 }}
 spec:
   type: LoadBalancer
+  {{- /*
+  Port 8090 serves BOTH the public OAuth issuer/JWKS (which must stay reachable by
+  external mail clients) and Thunder's CONSOLE admin UI plus its management REST API
+  (/users, /organization-units, /applications). There is no path-level split here, so
+  with no source restriction the identity server's admin surface is on the open
+  internet, protected only by the admin password.
+
+  Empty (the default) preserves the previous behaviour rather than silently breaking
+  an existing deployment's OAuth. Restrict it wherever the client population is known:
+    --set 'global.thunderLb.sourceRanges={203.0.113.0/24}'
+  Set global.thunderLb.enabled=false to drop the Service entirely and front Thunder
+  with an ingress that allowlists the public paths instead — the better end state,
+  and the reason this is now opt-out.
+  */}}
+  {{- with (((.Values.global).thunderLb).sourceRanges) }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   selector:
     app.kubernetes.io/name: thunder
     app.kubernetes.io/instance: {{ .Release.Name }}
