@@ -1,6 +1,6 @@
 services:
   postfix:
-    image: ghcr.io/lsflk/silver-smtp:main
+    image: ghcr.io/lsflk/silver-smtp:main@sha256:a916965200867f55ca3a486d82451312a1319dfcd97af5862dbbace1491859e4
     container_name: postfix
     ports:
       - "25:25"
@@ -26,25 +26,41 @@ services:
         condition: service_started
 
   raven:
-    image: ghcr.io/lsflk/raven:latest
+    image: ghcr.io/lsflk/raven:v0.7.0@sha256:650b8008d18ca782ae300fba928445bca6e35cdc93d3f03816735a5912fe77dd
     container_name: raven
+    # Only IMAP/IMAPS are meant to be reachable from the internet.
     ports:
       - "143:143"
       - "993:993"
-      - "24:24"
-      - "12345:12345"
-      - "9100:9100"
+    # Internal listeners: LMTP (24), SASL auth (12345) and socketmap (9100).
+    # Postfix reaches all three by container name over mail-network (see
+    # config-scripts/gen-postfix-conf.sh), so they must not be published to the
+    # host: port 24 accepts unauthenticated delivery into any mailbox (bypassing
+    # rspamd/clamav/opendkim), 12345 is a credential-check oracle with no rate
+    # limiting, and 9100 answers user-exists/virtual-alias/virtual-domain lookups.
+    expose:
+      - "24"
+      - "12345"
+      - "9100"
     volumes:
       - ./silver-config/raven/conf:/etc/raven:rw
       - ./silver-config/raven/data:/app/data:rw
       - ./silver-config/raven/certs:/certs:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       - DB_FILE=/app/data/databases/shared.db
       - SOCKETMAP_HOST=0.0.0.0
       - SOCKETMAP_PORT=9100
       - THUNDER_HOST=thunder
       - THUNDER_PORT=8090
+      # Thunder application ID raven uses to obtain a system-scoped token for
+      # OU -> domain resolution at login. Supplying it here replaces raven's
+      # fallback of scraping `docker logs thunder-setup`, which is why the Docker
+      # socket used to be mounted into this internet-facing daemon; a read-only
+      # socket is still full Docker API access, i.e. host root. Same knob as the
+      # Helm chart's raven.thunder.applicationId. Read it once after the first
+      # `docker compose up` and store it in .env:
+      #   docker logs thunder-setup 2>&1 | grep -i DEVELOP_APP_ID
+      - APPLICATION_ID=${THUNDER_APP_ID}
       - CACHE_TTL_SECONDS=300
       - TOKEN_REFRESH_SECONDS=3300
     networks:
@@ -55,10 +71,17 @@ services:
       thunder:
         condition: service_started
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # TODO: drop to the image's own `ravenuser` (uid 1001). Blocked on the setup
+    # scripts, which create ./silver-config/raven/{conf,data,certs} as root and
+    # copy privkey.pem with mode 0600, so a non-root container cannot read the
+    # TLS key or write the mail database. Low ports are not the blocker: Docker
+    # sets net.ipv4.ip_unprivileged_port_start=0, so uid 1001 can bind 24/143/993.
     user: "0:0"
 
   opendkim:
-    image: ghcr.io/lsflk/silver-dkim:main
+    image: ghcr.io/lsflk/silver-dkim:main@sha256:3e0143e8150c66980274c106658abc36a95139018f1ec9922d5457310ec72d74
     container_name: opendkim
     volumes:
       - ../conf/silver.yaml:/etc/opendkim/silver.yaml
@@ -75,13 +98,15 @@ services:
       - no-new-privileges:true
 
   rspamd:
-    image: rspamd/rspamd:latest
+    image: rspamd/rspamd:4.1@sha256:006a43f3939a4947f9b228a30681d22063bfeee085f91c63b272dc6525a6a14f
     container_name: rspamd
     hostname: rspamd
     expose:
       - "11332"
+    # Controller/web UI. Bound to loopback because it ships with the default
+    # `admin` password; reach it over an SSH tunnel (ssh -L 11334:localhost:11334).
     ports:
-      - "11334:11334"
+      - "127.0.0.1:11334:11334"
     volumes:
       - rspamd_data:/var/lib/rspamd
       - rspamd_logs:/var/log/rspamd
@@ -90,7 +115,7 @@ services:
       - mail-network
 
   redis:
-    image: redis:alpine
+    image: redis:8.10-alpine@sha256:978f0e01593e65eed801f2402944efcd936d43b5027e4908a7897baf88ed6241
     container_name: redis
     volumes:
       - redis-data:/data
@@ -101,7 +126,7 @@ services:
   # Local recursive DNS resolver (recommended)
   # Note: you can use any unbound image; this is an example. Ensure it is configured for recursion
   unbound:
-    image: mvance/unbound:latest
+    image: mvance/unbound:1.22.0@sha256:76906da36d1806f3387338f15dcf8b357c51ce6897fb6450d6ce010460927e90
     container_name: unbound
     restart: unless-stopped
     networks:
@@ -112,7 +137,7 @@ services:
     #   - ./unbound:/opt/unbound/etc/unbound
 
   clamav:
-    image: clamav/clamav:latest
+    image: clamav/clamav:1.5.4@sha256:0af8760cd96f9ab67d07977af36e155431581a9fe9f0ec8b256c9f855fda183e
     container_name: clamav
     volumes:
       - clamav_db:/var/lib/clamav
@@ -148,7 +173,7 @@ services:
 
   # Initialize database from the image
   thunder-db-init:
-    image: ghcr.io/asgardeo/thunder:0.32.0
+    image: ghcr.io/asgardeo/thunder:0.32.0@sha256:709cf7c69a759b827ad98b40b52516af1d6a157c703259feeda24114fa47e715
     container_name: thunder-db-init
     command: sh -c "cp -r /opt/thunder/repository/database/* /data/ && (cp -r /opt/thunder/consent/repository/database/* /consent-data/ 2>/dev/null || true)"
     volumes:
@@ -158,7 +183,7 @@ services:
 
   # Run setup once with the shared database
   thunder-setup:
-    image: ghcr.io/asgardeo/thunder:0.32.0
+    image: ghcr.io/asgardeo/thunder:0.32.0@sha256:709cf7c69a759b827ad98b40b52516af1d6a157c703259feeda24114fa47e715
     container_name: thunder-setup
     command: ./setup.sh
     volumes:
@@ -177,11 +202,15 @@ services:
 
   # Run Thunder server with the shared database
   thunder:
-    image: ghcr.io/asgardeo/thunder:0.32.0
+    image: ghcr.io/asgardeo/thunder:0.32.0@sha256:709cf7c69a759b827ad98b40b52516af1d6a157c703259feeda24114fa47e715
     container_name: thunder
     depends_on:
       thunder-setup:
         condition: service_completed_successfully
+    # Published deliberately: mail clients and raven need the public OAuth
+    # endpoints (issuer, /oauth2/jwks, /flow/execute) on this port. Note the same
+    # listener also serves the admin console and the management REST API, so put
+    # a reverse proxy or firewall in front of it before exposing it publicly.
     ports:
       - "8090:8090"
     volumes:
@@ -197,12 +226,15 @@ services:
     restart: unless-stopped
 
   certbot:
-    image: ghcr.io/lsflk/silver-certbot:main
+    image: ghcr.io/lsflk/silver-certbot:main@sha256:baebe8c26c3c2f0fa8c0736f739d51adc6f83b4d0ec14b7e17807ced4f496ae7
     container_name: certbot
     volumes:
       - ./silver-config/certbot/keys/etc:/etc/letsencrypt
       - ./silver-config/certbot/keys/log:/var/log/letsencrypt
-      - ./silver-config/certbot/keys/lib:/var/lib/letsencrypt"
+      - ./silver-config/certbot/keys/lib:/var/lib/letsencrypt
+      # certbot/scripts/entrypoint.sh reads the domain list from this file under
+      # `set -e`; without it the container exited before requesting any cert.
+      - ../conf/silver.yaml:/etc/certbot/silver.yaml:ro
     ports:
       - "80:80"
       - "443:443"
@@ -210,10 +242,13 @@ services:
       - mail-network
 
   silver-metadata:
-    image: ghcr.io/lsflk/silver-metadata-service:main
+    image: ghcr.io/lsflk/silver-metadata-service:main@sha256:6a301f199e84fd27371ed57f84923a9c9635106b0ca502e61f967071fcabfaeb
     container_name: silver-metadata
-    ports:
-      - "8888:8888"
+    # Internal API only (Prometheus scrapes it over the observability network).
+    # Not published to the host: its API-key check is skipped entirely when
+    # API_KEY is unset, which is the default.
+    expose:
+      - "8888"
     volumes:
       - clamav_db:/var/lib/clamav:ro
     environment:
@@ -231,7 +266,7 @@ services:
       - clamav
 
   postfix-exporter:
-    image: chatwork/kumina-postfix-exporter:latest
+    image: chatwork/kumina-postfix-exporter:latest@sha256:7a383f297bfe6ee9d7150b4611f6572c25a2a4ffb1d871222a9edb3ab99ac361
     container_name: postfix-exporter
     command:
       - --postfix.showq_path=/var/spool/postfix/public/showq
@@ -248,7 +283,7 @@ services:
       - postfix
 
   node-exporter:
-    image: prom/node-exporter:latest
+    image: prom/node-exporter:v1.12.1@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0
     container_name: node-exporter
     command:
       - "--path.rootfs=/host"
@@ -259,15 +294,29 @@ services:
       - /:/host:ro,rslave
     expose:
       - "9100"
+    # Host-level metrics belong on the observability network only; Prometheus is
+    # attached to it, and nothing on mail-network scrapes this exporter. Keeping
+    # it off mail-network stops an internet-facing mail service from reaching a
+    # container that mounts the whole host filesystem and shares the host PID
+    # namespace.
     networks:
-      - mail-network
+      - observability
     restart: unless-stopped
     pid: host
+    security_opt:
+      - no-new-privileges:true
 
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:latest
+    image: gcr.io/cadvisor/cadvisor:v0.55.1@sha256:3de2bd5203120b866d74a9b283b2ffb8ec382fbf9dc321814700c6ea6f44ec57
     container_name: cadvisor
-    privileged: true
+    # `privileged: true` grants every capability and disables seccomp/AppArmor.
+    # CAP_SYS_ADMIN plus the /dev/kmsg device below is the documented minimum for
+    # the machine and container stats collectors. Hosts with SELinux enforcing may
+    # additionally need a label override (`security_opt: [label=disable]`).
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - no-new-privileges:true
     devices:
       - /dev/kmsg
     volumes:
@@ -278,12 +327,13 @@ services:
       - /dev/disk/:/dev/disk:ro
     expose:
       - "8080"
+    # Observability only, for the same reason as node-exporter above.
     networks:
-      - mail-network
+      - observability
     restart: unless-stopped
 
   loki:
-    image: grafana/loki:3.6.7
+    image: grafana/loki:3.6.7@sha256:3c8fd3570dd9219951a60d3f919c7f31923d10baee578b77bc26c4a0b32d092d
     container_name: loki
     command: -config.file=/etc/loki/loki-config.yaml
     volumes:
@@ -295,7 +345,7 @@ services:
       - mail-network
 
   promtail:
-    image: grafana/promtail:3.5.8
+    image: grafana/promtail:3.5.8@sha256:2a7c5469d687377de5cb7c8356cf96090c0069814d90ef35f9874db445999609
     container_name: promtail
     volumes:
       - ./silver-config/promtail/promtail-config.yaml:/mnt/config/promtail-config.yaml
@@ -311,7 +361,7 @@ services:
     restart: unless-stopped
 
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.13.2@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
     container_name: prometheus
     env_file: ".env"
     volumes:
@@ -330,11 +380,14 @@ services:
       - mail-network
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:13.1.3@sha256:ab5cb380e3ff3172d6c8bd2e7cfd31cce977d2881b260e1f5bc089bf0b759b43
     container_name: grafana
     env_file: ".env"
+    # Bound to loopback: GRAFANA_ADMIN_USER/PASSWORD are empty by default, which
+    # leaves the admin account on Grafana's built-in admin/admin. Reach the UI
+    # over an SSH tunnel (ssh -L 3000:localhost:3000) until credentials are set.
     ports:
-      - 3000:3000
+      - "127.0.0.1:3000:3000"
     volumes:
       - grafana_data:/var/lib/grafana
       - ./silver-config/grafana/provisioning:/etc/grafana/provisioning:ro
