@@ -84,9 +84,14 @@ global:
     #                        Override only to add extra SANs.
 ```
 
-With `domains` left empty, certificates are minted for:
-- `mail.yourdomain.com` (+ `*.mail.yourdomain.com`) — the Secret postfix mounts
-- `yourdomain.com` (+ `*.yourdomain.com`)
+With `domains` left empty, **one** certificate is minted covering both names, into
+the Secret postfix and raven mount:
+- `mail.yourdomain.com` — also the common name
+- `yourdomain.com`
+
+Anything added to `domains` is appended as an extra SAN on that same certificate,
+so the Secret always exists regardless of what you put there. No wildcard names
+are requested.
 
 ### Staging vs Production
 
@@ -107,14 +112,28 @@ Burning through this with misconfigured charts is a common mistake — staging p
 
 ## Step 4 — Install Silver
 
-From the repo root (`global.domain` is mandatory — set it in `values.yaml` or via `--set`):
+From the repo root:
 
 ```bash
 helm upgrade --install silver ./charts/silver \
   --set global.domain=yourdomain.com \
+  --set thunder.configuration.server.publicUrl=https://yourdomain.com:8090 \
+  --set thunder.configuration.gateClient.hostname=yourdomain.com \
   --namespace silver \
   --create-namespace
 ```
+
+Three inputs, not one. `global.domain` is the single source of truth, but the two
+`thunder.configuration.*` values are consumed by the **vendored** Thunder subchart,
+and Helm cannot template values files — so they have to be passed as literals that
+repeat the domain. `templates/domain-guard.yaml` fails the render if they are
+missing or drift out of sync, rather than letting the mismatch surface later as an
+OAuth issuer error at first login. Put them in a values overlay to avoid retyping
+them; `values-prod.yaml` already has them laid out.
+
+`THUNDER_PUBLIC_URL` used to be a fourth flag. It is now derived from
+`global.domain` and delivered by `templates/thunder-public-url-secret.yaml`, so
+setting it is no longer necessary.
 
 With a values overlay (e.g. dev — TLS/SASL off, standalone postfix, domain preset):
 

@@ -1,6 +1,74 @@
+# Production overlay.
+#
+# Everything marked CHANGE ME must be edited before use. This file previously
+# contained only the opendkim block below, which meant `-f values-prod.yaml`
+# either failed to render (no global.domain) or, worse, silently inherited
+# issuer: le-staging from values.yaml and issued PUBLICLY UNTRUSTED certificates
+# for a production mail server — breaking raven's JWKS fetch and mail-client OAuth.
+#
+#   helm upgrade --install silver ./charts/silver -n silver --create-namespace \
+#     -f charts/silver/values-prod.yaml
+#
+# Before the first production install, verify DNS and the HTTP-01 path with
+# issuer: le-staging, then switch to le-prod. Let's Encrypt allows 5 duplicate
+# certificates per week per identical name set.
+
+global:
+  # CHANGE ME. Every other name derives from this: mail.<domain>, the JWT issuer,
+  # the TLS SANs, and the Thunder redirect URIs.
+  domain: example.com
+
+  tls:
+    enabled: true
+    # Publicly trusted. Switch to le-staging while validating DNS, then back.
+    issuer: le-prod
+    renewBefore: "720h"
+    # Extra SANs beyond [ mail.<domain>, <domain> ]. Each must resolve to this
+    # cluster before cert-manager can validate it.
+    domains: []
+
+  # CHANGE ME. Leave empty and the chart derives a key from the release name —
+  # deterministic, and therefore computable by anyone who knows it. This grants
+  # Admin/Read/Write on the bucket holding every mail attachment.
+  #   --set global.s3.secretKey=$(openssl rand -hex 32)
+  s3:
+    accessKey: raven
+    secretKey: ""
+    bucket: email-attachments
+
+  # Generated on first install and reused thereafter. Set explicitly only for
+  # GitOps / `helm template | kubectl apply`, where `lookup` cannot see the
+  # cluster and would otherwise emit a new password on every render.
+  thunderAdmin:
+    secretName: silver-thunder-admin
+    secretKey: password
+    password: ""
+
+  # Port 8090 carries the public OAuth issuer AND Thunder's admin console/API.
+  # CHANGE ME: restrict to the networks your mail clients actually come from, or
+  # set enabled: false and front Thunder with an ingress that allowlists the
+  # public paths.
+  thunderLb:
+    enabled: true
+    sourceRanges: []
+
+thunder:
+  enabled: true
+  configuration:
+    server:
+      # CHANGE ME to match global.domain. Cannot be derived — it is consumed as a
+      # subchart value, and Helm does not template values files. This becomes the
+      # JWT issuer and must equal raven's oauth_issuer_url; templates/domain-guard.yaml
+      # fails the render if it drifts.
+      publicUrl: "https://example.com:8090"
+    gateClient:
+      # CHANGE ME to match global.domain.
+      hostname: "example.com"
+
 opendkim:
   replicaCount: 1
   domains:
+    # CHANGE ME to match global.domain.
     - domain: example.com
       dkimSelector: mail
       dkimKeySize: 2048
@@ -12,5 +80,7 @@ opendkim:
       cpu: 500m
       memory: 512Mi
   persistence:
+    # CHANGE ME. `kubectl get storageclass` — must support ReadWriteOnce and
+    # survive pod rescheduling; losing this volume loses the DKIM signing keys.
     storageClass: "your-storage-class"
     size: 5Gi
