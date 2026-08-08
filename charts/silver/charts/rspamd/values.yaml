@@ -62,15 +62,26 @@ persistence:
   size: 1Gi
   mountPath: /var/lib/rspamd
 
+# Dependency endpoints.
+#
+# redis/unbound hosts default to <release>-redis / <release>-unbound, derived
+# from .Release.Name in templates/_helpers.tpl. They were previously hardcoded
+# to silver-redis / silver-unbound here, which meant any release NOT named
+# `silver` left the strict init containers timing out and exiting 1, so the pod
+# never started. Values files are not rendered as templates, so the default
+# cannot be expressed here — leave these empty to get the derived name, and set
+# them only to point at an endpoint outside the release.
 dependencies:
   redis:
-    host: silver-redis
+    host: ""
     port: 6379
   unbound:
-    host: silver-unbound
+    host: ""
     port: 53
   clamav:
-    host: clamav-server
+    # No default: Silver ships no ClamAV chart. Required when
+    # modules.antivirus.enabled is true, and the render fails without it.
+    host: ""
     port: 3310
   strictInitChecks: true
   # Seconds (plain integer, no unit suffix) — consumed directly in init-container shell arithmetic.
@@ -78,7 +89,10 @@ dependencies:
 
 modules:
   antivirus:
-    enabled: true
+    # Off by default: no chart in this repository creates a ClamAV Service, so
+    # this could never have worked out of the box. To enable, deploy ClamAV
+    # yourself and set dependencies.clamav.host to its Service name.
+    enabled: false
     clamav_action: add_header
   classifier_bayes:
     enabled: true
@@ -88,9 +102,56 @@ modules:
   metrics_exporter:
     enabled: true
 
+# Controller (web UI) credentials. The controller is Rspamd's admin API: it can
+# whitelist senders, retrain the Bayes classifier and rewrite the running
+# config, so it is never deployed without a password.
 webui:
+  # Leave empty to generate a password on first install and reuse whatever is
+  # already in the cluster thereafter (upgrades never rotate it). Set it
+  # explicitly for GitOps / `helm template | kubectl apply`, where `lookup`
+  # cannot see the cluster and would emit a new random value on every render.
+  # Read a generated one back with:
+  #   kubectl get secret <release>-rspamd-webui -o jsonpath='{.data.password}' | base64 -d
   password: ""
+  # Guards privileged actions (learn spam/ham, fuzzy add/delete, config write).
+  # Empty reuses `password`. Rspamd recommends a distinct secret here.
+  enablePassword: ""
   passwordEncoding: plaintext
+
+# NetworkPolicy for rspamd.
+#
+# Opt-in, matching the opendkim chart. The previous version was unconditional
+# and its milter rule selected `app.kubernetes.io/name: smtp`, which no pod in
+# the release carries, so Postfix -> rspamd:11332 was dropped and (because
+# Postfix uses milter_default_action = accept) every message was delivered
+# unfiltered with nothing logged.
+networkPolicy:
+  enabled: false
+  # Who may reach the milter port. Empty selects this release's Postfix pods,
+  # which is the only client that needs it.
+  milterIngressFrom: []
+  # Who may reach the controller / web UI port. Empty means nobody: use
+  # `kubectl port-forward`, which reaches the pod through the kubelet and needs
+  # no ingress rule. This previously allowed `namespaceSelector: {}` — every
+  # namespace in the cluster.
+  # Example:
+  #   webuiIngressFrom:
+  #     - namespaceSelector:
+  #         matchLabels:
+  #           kubernetes.io/metadata.name: admin-tools
+  webuiIngressFrom: []
+  # Rspamd fetches its maps from maps.rspamd.com over HTTPS and, with the
+  # default fuzzy_check module, talks to fuzzy.rspamd.com on UDP 11335. Without
+  # this, enabling the policy quietly degrades filtering.
+  allowExternalMaps: true
+  # Keeps the external-egress rule from doubling as a cluster-internal allow.
+  # Widen or narrow to match your cluster and pod/service CIDRs.
+  externalEgressExcept:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+  # Extra egress rules appended verbatim, e.g. for an external Redis or DNS.
+  extraEgress: []
 
 livenessProbe:
   tcpSocket:

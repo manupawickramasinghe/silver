@@ -1,3 +1,20 @@
+{{- /*
+Rspamd NetworkPolicy.
+
+Previously this template had no `enabled` gate and `networkPolicy` did not exist
+in values.yaml, so the policy was applied unconditionally — and its milter
+ingress rule selected `app.kubernetes.io/name: smtp`, a label no pod in the
+release carries (the Postfix chart derives its name from .Chart.Name, giving
+`postfix`). Postfix -> rspamd:11332 was therefore dropped. Because Postfix sets
+`milter_default_action = accept`, every message was then delivered completely
+unfiltered, with nothing logged as an error.
+
+It is now opt-in, matching the opendkim chart, because a correct policy for
+Rspamd is deployment-specific: Rspamd fetches its maps over HTTPS and the
+egress rules below have to match how the cluster reaches the internet. An
+unconditional policy that silently drops required traffic is worse than none.
+*/}}
+{{- if .Values.networkPolicy.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -12,40 +29,60 @@ spec:
     - Ingress
     - Egress
   ingress:
+    # Milter port: Postfix only.
     - from:
+{{- if .Values.networkPolicy.milterIngressFrom }}
+{{ toYaml .Values.networkPolicy.milterIngressFrom | indent 8 }}
+{{- else }}
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: smtp
+              app.kubernetes.io/name: postfix
+              app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
       ports:
         - protocol: TCP
-          port: 11332
+          port: {{ .Values.service.milter.port }}
+{{- if .Values.networkPolicy.webuiIngressFrom }}
+    # Controller / web UI. Deliberately has no default: this used to be open to
+    # `namespaceSelector: {}`, i.e. every namespace in the cluster, on an
+    # endpoint that can whitelist senders, retrain Bayes and rewrite the running
+    # config. `kubectl port-forward` (see README) reaches the pod through the
+    # kubelet and does not need an ingress rule at all.
     - from:
-        - namespaceSelector: {}
+{{ toYaml .Values.networkPolicy.webuiIngressFrom | indent 8 }}
       ports:
         - protocol: TCP
-          port: 11334
+          port: {{ .Values.service.webui.port }}
+{{- end }}
   egress:
     - to:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: redis
+              app.kubernetes.io/instance: {{ .Release.Name }}
       ports:
         - protocol: TCP
-          port: 6379
+          port: {{ .Values.dependencies.redis.port }}
     - to:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: unbound
+              app.kubernetes.io/instance: {{ .Release.Name }}
       ports:
         - protocol: UDP
-          port: 53
+          port: {{ .Values.dependencies.unbound.port }}
+        - protocol: TCP
+          port: {{ .Values.dependencies.unbound.port }}
+{{- if .Values.modules.antivirus.enabled }}
     - to:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: clamav
       ports:
         - protocol: TCP
-          port: 3310
+          port: {{ .Values.dependencies.clamav.port }}
+{{- end }}
+    # Cluster DNS.
     - to:
         - namespaceSelector: {}
       ports:
@@ -53,3 +90,25 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+{{- if .Values.networkPolicy.allowExternalMaps }}
+    # Rspamd downloads its maps (freemail lists, RBL configuration, whitelists)
+    # from maps.rspamd.com over HTTPS and, with the default fuzzy_check module,
+    # talks to fuzzy.rspamd.com on UDP 11335. Without this rule an enabled
+    # policy leaves those fetches failing and filtering quietly degraded.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+{{ toYaml .Values.networkPolicy.externalEgressExcept | indent 14 }}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+        - protocol: UDP
+          port: 11335
+{{- end }}
+{{- with .Values.networkPolicy.extraEgress }}
+{{ toYaml . | indent 4 }}
+{{- end }}
+{{- end }}
