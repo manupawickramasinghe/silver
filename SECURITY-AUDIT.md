@@ -349,6 +349,13 @@ No `allowPrivilegeEscalation: false`, no `capabilities.drop: [ALL]`, no `readOnl
 
 `rspamd`, `redis`, `opendkim` and `seaweedfs` all do this correctly, which is what makes raven and postfix stand out as gaps rather than a deliberate policy. Raven additionally takes `hostPort` 143/993, making it the most exposed workload in the cluster.
 
+**Fixed partially, by design — two hardening steps were deliberately not taken:**
+
+- **UID 0 is retained.** Raven binds low ports and owns `/app/data`, and its Compose deployment additionally depends on root because the config generator writes root-owned files into the mounted config directory (found while fixing C-2). De-rooting requires fixing that ownership first; doing half of it would break the deployment. What UID 0 costs is bounded instead — dropping to only `NET_BIND_SERVICE` removes `CAP_DAC_OVERRIDE`, `CAP_SYS_CHROOT`, `CAP_SETUID` and the rest.
+- **`readOnlyRootFilesystem` stays `false`**, matching the rspamd chart's own choice, but is now explicitly commented rather than merely absent. Raven's writable paths outside its mounted volumes were never established, and a mail server that cannot write is worse than one with a writable root filesystem.
+
+Both remain open as follow-up. The capability drop was also never exercised against a running raven — an unexpected capability requirement would surface as a crash loop, so this is the item most worth confirming in staging before merge.
+
 ### H-17 · Every pod automounts a ServiceAccount token; three have no ServiceAccount at all
 **Status:** Fixed — *fix: harden Raven and Postfix pod security contexts*
 
@@ -641,3 +648,17 @@ The fixes were also **integration-tested together**: all ten branches merge into
 Not exercised: no Kubernetes cluster was available, so `helm install`, `lookup`-based Secret reuse across upgrades, and NetworkPolicy enforcement were not tested against a live API server. The Compose stack was not brought up end-to-end — it requires public DNS, a routable IP, and Let's Encrypt issuance. Mail flow, DKIM signing and IMAP delivery were therefore not tested against a running deployment.
 
 Anyone accepting these changes should run a full deployment in a staging environment before production.
+
+The three highest-value things to confirm there, in order:
+
+1. **Raven starts under the dropped capability set** (H-16). An unexpected capability requirement surfaces as a crash loop, and this was never exercised against a running pod.
+2. **OAuth login actually succeeds end to end** (C-7). The issuer values now agree at render time, but no token was ever issued or validated.
+3. **Mail flows through Rspamd with the corrected NetworkPolicy** (H-1, H-22). The selector is right and the policy is opt-in, but no enforcing CNI was available — and the failure mode here is silent, so it needs a positive test that a message is actually scanned, not just that nothing errored.
+
+## Changes to this repository
+
+The fixes are 13 branches, each scoped to one issue and to a disjoint set of files. They merge into a single tree with no conflicts, and the combined result passes `helm lint`, `helm template`, `docker compose config`, `py_compile` and `bash -n` across all 14 changed scripts, with every invariant above intact.
+
+Two branches are stacked rather than cut from `main`, because they touch files their parent also changes: the workload-hardening branch sits on the SeaweedFS credentials branch, and the `.env.example` documentation sits on the Thunder credentials branch. Both need retargeting to `main` once their parent merges.
+
+Note that this fork also carries pre-existing pull requests from other contributors that overlap this work — at time of writing, one targeting the same `manage_roles.sh` injection, one the same Thunder admin defaults, and several touching `test/load/`. None were reconciled; each affected pull request names the overlap so a reviewer can choose which version to take rather than reviewing the same fix twice.
