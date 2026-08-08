@@ -11,9 +11,9 @@ The actual implementations are in separate modules for better organization:
 - imap_tester.py: IMAP protocol testing
 """
 
-import os
-import sys
 import logging
+import subprocess
+import sys
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -31,4 +31,7 @@ if __name__ == "__main__":
     # This allows running the test directly with python
     logger.info("Starting Locust load tests...")
     logger.info("Available test classes: SMTPLoadTester, IMAPLoadTester")
-    os.system(f"locust -f {sys.argv[0]} --host=http://localhost")
+    subprocess.run(
+        ["locust", "-f", sys.argv[0], "--host", "http://localhost"],
+        check=True
+    )

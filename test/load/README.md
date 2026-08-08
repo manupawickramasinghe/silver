@@ -73,6 +73,24 @@ Or create a `.env` file in the `test/load` directory:
 MAIL_DOMAIN=your-domain.com
 ```
 
+### 🔒 TLS
+
+All connections are encrypted and the server's certificate and hostname are verified:
+
+- IMAP uses port 993 (implicit TLS), falling back to port 143 with STARTTLS. There is **no plaintext fallback** — the test accounts' passwords are never sent in the clear.
+- SMTP uses STARTTLS on port 587 with a verifying TLS context.
+
+If the certificate cannot be verified, the tester reports a failure instead of downgrading.
+
+For a development server using a self-signed certificate, verification can be disabled explicitly:
+
+```bash
+export MAIL_TLS_INSECURE=1
+```
+
+> [!WARNING]
+> `MAIL_TLS_INSECURE=1` disables certificate and hostname checks for both SMTP and IMAP, which makes the test credentials interceptable. Never set it against a production deployment.
+
 ## 📋 Running Load Tests
 
 ### Interactive Mode (Web UI)
