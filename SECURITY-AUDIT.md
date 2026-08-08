@@ -21,25 +21,30 @@ Severity reflects impact on a production mail deployment, not exploitability in 
 
 | Severity | Count | Fixed | Open |
 |---|---:|---:|---:|
-| Critical | 6 | 6 | 0 |
-| High | 18 | 12 | 6 |
+| Critical | 7 | 7 | 0 |
+| High | 20 | 14 | 6 |
 | Medium | 22 | 3 | 19 |
 | Low | 11 | 1 | 10 |
-| **Total** | **57** | **22** | **35** |
+| **Total** | **60** | **25** | **35** |
 
-The four findings a reviewer should look at first:
+Five of these (C-7, H-19, H-20, and the corrections to C-1, H-7 and H-12) were found *while fixing* the original findings, not during the audit pass. They are marked as such in place. C-7 in particular was hidden behind C-1: the render aborted before the broken result could be observed.
 
-1. **C-1** — the documented one-command Helm install does not render at all.
+The five findings a reviewer should look at first:
+
+1. **C-7** — Thunder's JWT issuer renders empty while raven validates against a real one, so every IMAP and SMTP login fails. Silent: pods start and lint passes.
 2. **C-2** — Raven's internal LMTP port is published to the internet, bypassing all mail filtering.
 3. **H-1** — the Rspamd NetworkPolicy selector matches no pod, so on Kubernetes every message is delivered unscanned, silently.
 4. **C-6** — the S3 credentials protecting every mail attachment are either a public placeholder or derivable from the release name.
+5. **C-1** — the documented Helm install command does not render at all.
+
+A theme worth naming: the four most serious findings are all **silent**. Nothing crashes, nothing logs an error, and `helm lint` passes in every case. C-7 breaks all authentication, H-1 disables spam and antivirus filtering, C-6 leaves attachments world-readable — and a deployment exhibiting all three looks healthy. That is the property that makes them worth prioritising over the noisier items further down.
 
 ---
 
 ## Critical
 
 ### C-1 · The documented Helm install command fails to render
-**Status:** Fixed — *fix: make the documented Helm install render, and issue one multi-SAN certificate*
+**Status:** Fixed — *fix: make the Helm install render and produce a coherent OAuth configuration*
 `charts/silver/templates/domain-guard.yaml:38`, `charts/silver/values.yaml:216-217`
 
 The `THUNDER_PUBLIC_URL` guard does not short-circuit on an empty value, unlike the two sibling guards at lines 25 and 30 which correctly do. `values.yaml` ships `value: ""` and `thunder.enabled` defaults to `true`, so the guard fires on the shipped default.
@@ -55,6 +60,33 @@ is registered with the wrong redirect URI.
 ```
 
 Every install without an explicit `--set thunder.setup.env[1].value=...` is broken. The guard logic is otherwise sound and well-intentioned — this is a one-character-class omission in an otherwise careful design.
+
+**Correction to the original framing.** This entry first described the fix as "restoring the one-command install". That was wrong, and fixing it surfaced C-7 below. The one-command install was never achievable: two of the three required values are consumed by the *vendored* Thunder subchart and Helm cannot template values files, so they must be passed as literals. The chart needs three inputs. What the fix actually delivers is that the failure is now honest and actionable, that the three-flag command both renders **and** produces a working OAuth configuration, and that `THUNDER_PUBLIC_URL` — the one value that *can* be derived — now is.
+
+### C-7 · Thunder's JWT issuer is empty, so every OAuth login fails
+**Status:** Fixed — *fix: make the Helm install render and produce a coherent OAuth configuration*
+`charts/silver/values.yaml` (`thunder.configuration.server.publicUrl`, `thunder.configuration.gateClient.hostname`)
+
+Found while fixing C-1, which was masking it — the render aborted before anyone could observe the result.
+
+Both values ship as `""`. An empty string is a *set* value in Helm, so these override the subchart's own defaults rather than falling back to them. The rendered Thunder `deployment.yaml` ConfigMap therefore contains:
+
+```yaml
+server:
+  public_url: ""
+jwt:
+  issuer: ""
+```
+
+while raven, in the same render, is configured with:
+
+```yaml
+oauth_issuer_url: "https://example.com:8090"
+```
+
+Raven validates tokens against an issuer Thunder never claims. Pods start, `helm lint` passes, certificates issue — and **every IMAP and SMTP login fails** on an issuer mismatch, with nothing in the chart output to suggest why. `values.yaml`'s own comment states the requirement ("Becomes the JWT issuer, so it must equal raven's oauth_issuer_url"); the guards simply skipped empty values.
+
+This is precisely the failure mode `domain-guard.yaml`'s header comment says the file exists to prevent. Both values are now `required`, with error messages naming the exact flags. They cannot be derived and injected the way `THUNDER_PUBLIC_URL` was — that one reaches the setup job as container *env*, so `setup.secretEnv` → `secretKeyRef` works, whereas these are consumed as subchart *values* rendered into a ConfigMap via `toYaml`, where no injection point exists.
 
 ### C-2 · Raven's internal LMTP, SASL and socketmap ports are published to `0.0.0.0`
 **Status:** Fixed — *fix: stop publishing internal Raven, metadata and S3 ports to the host*
@@ -218,9 +250,20 @@ Separately, line 205 ends in a stray double quote — `- ./silver-config/certbot
 
 ### H-7 · Certbot arguments built by string concatenation allow flag injection
 **Status:** Fixed — *fix: build certbot arguments safely instead of by string concatenation*
+**Severity downgraded on evidence: robustness fix with a security edge, not an exploitable redirect.**
 `services/certbot/scripts/entrypoint.sh:28-48`
 
-`CERTBOT_CMD` is assembled as a string and expanded unquoted at `exec $CERTBOT_CMD`, so a `domain:` value in `silver.yaml` containing whitespace or a leading `-` injects additional certbot flags — `--server` pointing at an attacker's ACME endpoint being the worst case. Line 48's success message is unreachable dead code after `exec`.
+`CERTBOT_CMD` is assembled as a string and expanded unquoted at `exec $CERTBOT_CMD`, so a `domain:` value in `silver.yaml` containing whitespace or a leading `-` splits into additional argv entries. Line 48's success message is unreachable dead code after `exec`.
+
+**Correction.** This was originally rated High on the assumption that an injected `--server` would redirect ACME registration to an attacker-controlled endpoint. Tested against real certbot, it does not:
+
+```
+certbot: error: argument -d/--domains/--domain: expected one argument
+```
+
+The loop prefixes *every* token with `-d`, so an injected option lands in `-d`'s value slot, where argparse refuses option-like strings. On today's exact code the attack fails closed as a usage error.
+
+It was still fixed, because the protection is an incidental side effect of the loop's shape rather than a control: any edit that appends a domain without a preceding `-d`, or reuses the pattern for another flag, makes it live with no warning — and config-controlled values already choose argv boundaries.
 
 ### H-8 · Raven runs as root with the Docker socket mounted
 **Status:** Fixed — *fix: stop publishing internal Raven, metadata and S3 ports to the host*
@@ -268,7 +311,11 @@ context.verify_mode = ssl.CERT_NONE
 **Status:** Fixed — *fix: create key material with restrictive permissions and keep credentials out of git*
 `scripts/user/create_test_users.sh:239-242,285`
 
-100 plaintext mailbox passwords are written to `scripts/user/test_users/test_users_credentials.csv` at the default umask. No `.gitignore` rule matched that path — the existing rules cover `test/test_data/` only — so a single `git add -A` would commit them to a public repository. `test/load/test_data/users.csv`, which `remove_test_users.sh:408` expects, was likewise unmatched.
+100 plaintext mailbox passwords are written to `scripts/user/test_users/test_users_credentials.csv` at the default umask. No `.gitignore` rule matched that path — the existing rules cover `test/test_data/` only — so a single `git add -A` would commit them to a public repository.
+
+**Correction:** this entry originally also claimed `test/load/test_data/users.csv` was unignored. It is not — a pre-existing `test/load/.gitignore` already covers it. Only the `scripts/user/test_users/` path was exposed. An ignore rule for the untracked `test/security/network_audit/` directory (packet captures of live mail traffic) was added at the same time.
+
+This audit's own authoring hit the risk it describes: an unscoped `git add -A` staged both the packet captures and ten agent worktrees before being caught and reverted. The ignore rules now prevent the first half of that recurring.
 
 ### H-13 · Cloudflare API token passed as a command-line argument
 **Status:** Fixed — *fix: create key material with restrictive permissions and keep credentials out of git*
@@ -302,6 +349,27 @@ No `allowPrivilegeEscalation: false`, no `capabilities.drop: [ALL]`, no `readOnl
 `automountServiceAccountToken` appears nowhere in the tree. Raven, Postfix and SeaweedFS declare no `serviceAccountName` and ship no `serviceaccount.yaml`, so they run under the namespace `default` SA with its token mounted at `/var/run/secrets/kubernetes.io/serviceaccount`. None of them talks to the Kubernetes API. Combined with H-16 this is a real escalation path.
 
 *Positive finding:* there are **no** Roles or ClusterRoles anywhere in the tree, so there is no over-permissive RBAC to report.
+
+### H-19 · `transfer` destroys a role assignment and reports that nothing happened
+**Status:** Fixed — *fix: close command and SQL injection in the user role management scripts*
+`scripts/user/manage_roles.sh` (`remove_user_from_role`)
+
+Found while fixing H-2/H-4. Worse than H-4 described, and independent of it.
+
+`remove_user_from_role` issues its `DELETE`, then reads `changes()` over a **second** `sqlite3` invocation. `changes()` is per-connection state, so the second connection always reports `0`. Every successful removal is therefore reported as "user was not assigned" — and `transfer_role` treats that as failure and aborts **before attempting the restore**. The `DELETE` has already committed.
+
+Net effect: `manage_roles.sh transfer alice@x bob@x info@x` can leave the role with no members at all, while telling the operator nothing was changed. Reproduced against `origin/main`.
+
+### H-20 · TLS private keys are left world-readable on any re-run
+**Status:** Fixed — *fix: create key material with restrictive permissions and keep credentials out of git*
+`services/config-scripts/gen-thunder.sh:20-25`, `services/config-scripts/gen-observability.sh:54-61`
+
+Two additional defects found while fixing H-11, both of which defeat that fix on their own:
+
+- **`chmod` runs after `chown`.** Once `sudo chown 10001:10001` succeeds, the invoking user no longer owns the file, so the following unprivileged `chmod 600` fails — and under `set -euo pipefail` the script aborts, leaving the key at whatever mode `cp` created.
+- **`cp` onto an existing destination preserves the destination's mode.** A `(umask 077; cp …)` therefore does *not* repair a key that a previous run already created at `0644`. The destination has to be removed first.
+
+The same `cp` behaviour also made both scripts non-re-runnable: `cp` opens the destination `O_WRONLY`, so once `grafana.crt` is `0444` or the Thunder certs are owned by uid 10001, the next run dies with `Permission denied`.
 
 ### H-18 · All service configuration is cloned from an unpinned personal repository at install time
 **Status:** Open — see *Deliberately deferred*
