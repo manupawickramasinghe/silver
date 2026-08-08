@@ -235,11 +235,22 @@ echo -e "${CYAN}Current users: ${GREEN}$CURRENT_USER_COUNT${NC}"
 USER_COUNT=$NUM_USERS
 echo -e "${GREEN}✓ Will generate $USER_COUNT test users${NC}\n"
 
-# Create output directory
-mkdir -p "$OUTPUT_DIR"
+# Create output directory. The CSV below holds the plaintext passwords of every
+# generated mailbox, so keep the directory owner-only rather than letting the
+# default umask make it world-readable. `-m` only applies to directories mkdir
+# actually creates (hence SC2174), so tighten an existing one from an earlier
+# run explicitly with the chmod below.
+# shellcheck disable=SC2174
+mkdir -m 700 -p "$OUTPUT_DIR"
+chmod 700 "$OUTPUT_DIR"
 
-# Initialize CSV file with headers
-echo "username,email,password" > "$CREDENTIALS_FILE"
+# Initialize CSV file with headers, created 0600.
+# `>` truncates an existing file but keeps its old (possibly 0644) mode, so
+# remove any file from an earlier run first and create it under umask 077. The
+# umask is scoped to a subshell so the rest of the script is unaffected; later
+# appends inherit the mode of the file created here.
+rm -f "$CREDENTIALS_FILE"
+(umask 077; echo "username,email,password" > "$CREDENTIALS_FILE")
 echo -e "${GREEN}✓ Created credentials file: $CREDENTIALS_FILE${NC}"
 
 echo -e "${CYAN}Generating test users...${NC}\n"
