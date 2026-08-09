@@ -76,7 +76,7 @@ class TestDataGenerator:
         }
 
         # Validate all files are under limit
-        for filename, size in list(files.items()):
+        for filename, size in files.items():
             if size > max_size:
                 print(f"Warning: {filename} ({size} bytes) exceeds max size ({max_size} bytes), adjusting...")
                 files[filename] = max_size
