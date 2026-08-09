@@ -17,7 +17,6 @@
 #
 
 # Colors
-CYAN="\033[0;36m"
 GREEN="\033[0;32m"
 YELLOW="\033[1;33m"
 RED="\033[0;31m"
@@ -62,13 +61,16 @@ thunder_authenticate() {
         return 1
     fi
 
+    if [ -z "$THUNDER_ADMIN_USERNAME" ] || [ -z "$THUNDER_ADMIN_PASSWORD" ]; then
+        echo -e "${RED}✗ THUNDER_ADMIN_USERNAME and THUNDER_ADMIN_PASSWORD environment variables are required${NC}" >&2
+        return 1
+    fi
+
     echo -e "${YELLOW}Authenticating with Thunder...${NC}"
 
     # Step 1: Extract DEVELOP App ID
     echo "  - Extracting DEVELOP_APP_ID from Thunder setup logs..."
-    DEVELOP_APP_ID=$(thunder_get_develop_app_id)
-
-    if [ $? -ne 0 ] || [ -z "$DEVELOP_APP_ID" ]; then
+    if ! DEVELOP_APP_ID=$(thunder_get_develop_app_id) || [ -z "$DEVELOP_APP_ID" ]; then
         echo -e "${RED}✗ Failed to extract DEVELOP_APP_ID${NC}" >&2
         return 1
     fi
@@ -109,7 +111,7 @@ thunder_authenticate() {
     auth_response=$(curl -s -w "\n%{http_code}" -X POST \
         "https://${thunder_host}:${thunder_port}/flow/execute" \
         -H "Content-Type: application/json" \
-        -d "{\"flowId\":\"${FLOW_ID}\",\"inputs\":{\"username\":\"${THUNDER_ADMIN_USERNAME:-admin}\",\"password\":\"${THUNDER_ADMIN_PASSWORD:-admin}\",\"requested_permissions\":\"system\"},\"action\":\"action_001\"}")
+        -d "{\"flowId\":\"${FLOW_ID}\",\"inputs\":{\"username\":\"${THUNDER_ADMIN_USERNAME}\",\"password\":\"${THUNDER_ADMIN_PASSWORD}\",\"requested_permissions\":\"system\"},\"action\":\"action_001\"}")
 
     local auth_body
     local auth_status
