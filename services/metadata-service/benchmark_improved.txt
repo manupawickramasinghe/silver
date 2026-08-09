@@ -1,0 +1,7 @@
+goos: linux
+goarch: amd64
+pkg: github.com/lsflk/silver-metadata-service
+cpu: Intel(R) Xeon(R) Processor @ 2.30GHz
+BenchmarkCreateHeartbeatPayload-4   	   68122	     18493 ns/op	    1346 B/op	      19 allocs/op
+PASS
+ok  	github.com/lsflk/silver-metadata-service	1.452s
