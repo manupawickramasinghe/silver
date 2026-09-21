@@ -1,6 +1,7 @@
 # data_generator.py - Test data generation utilities
 import os
 import random
+import tempfile
 from faker import Faker
 from config import EmailServerConfig
 
@@ -85,9 +86,7 @@ class TestDataGenerator:
         for filename, size in files.items():
             filepath = os.path.join(attachment_dir, filename)
             if not os.path.exists(filepath):
-                with open(filepath, 'wb') as f:
-                    # Write random bytes instead of zeros for more realistic files
-                    f.write(os.urandom(size))
+                self._create_attachment(filepath, size)
 
         # Return attachment info
         return [
@@ -98,7 +97,27 @@ class TestDataGenerator:
             } 
             for fname, size in files.items()
         ]
-    
+
+    @staticmethod
+    def _create_attachment(filepath, size):
+        """Write an attachment fixture atomically
+
+        Every Locust user builds a generator on start, so several of them can
+        create the same fixture at once. Writing to a temporary file and
+        renaming it means a concurrent reader sees either no file or the whole
+        one, never a half-written attachment.
+        """
+        fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(filepath), prefix='.tmp-')
+        try:
+            with os.fdopen(fd, 'wb') as f:
+                # Write random bytes instead of zeros for more realistic files
+                f.write(os.urandom(size))
+            os.replace(temp_path, filepath)
+        except BaseException:
+            os.unlink(temp_path)
+            raise
+
+
     def generate_email_content(self, email_type="random"):
         """Generate email content based on type"""
         if email_type == "random":

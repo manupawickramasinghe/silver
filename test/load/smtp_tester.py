@@ -20,7 +20,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 
-from config import EmailServerConfig
+from config import EmailServerConfig, create_ssl_context
 from data_generator import TestDataGenerator
 from user_manager import TestUserManager
 
@@ -40,29 +40,42 @@ class SMTPLoadTester(User):
         self.user_account = self.user_manager.get_random_user()
         logger.info(f"Starting SMTP tests for user: {self.user_account['email']}")
     
-    def _is_rate_limit_error(self, exception):
-        """Check if exception is a rate limit error (421 - too many connections)"""
-        if isinstance(exception, smtplib.SMTPConnectError):
-            # SMTPConnectError args: (code, message)
-            if len(exception.args) >= 1:
-                code = exception.args[0]
-                return code == 421
-        # Also check for errors during connection that contain '421'
-        error_str = str(exception).lower()
-        return '421' in error_str or 'too many connections' in error_str
-    
+    @staticmethod
+    def _is_rate_limit_error(exception):
+        """Check if exception is a rate limit error (421 - too many connections)
+
+        Only a genuine 421 response counts. Matching on the stringified
+        exception would also swallow unrelated failures whose text happens to
+        contain "421" and report a real outage as a passing request.
+        """
+        return isinstance(exception, smtplib.SMTPResponseException) and exception.smtp_code == 421
+
+    @staticmethod
+    def _safe_quit(server):
+        """Close a connection, recording rather than hiding teardown errors"""
+        if server is None:
+            return
+        try:
+            server.quit()
+        except Exception:
+            logger.debug("SMTP quit failed during cleanup", exc_info=True)
+
     def _connect_smtp(self):
         """Establish SMTP connection"""
         start_time = time.time()
         server = None
-        
+
         try:
+            server = smtplib.SMTP(
+                self.config.SMTP_SERVER,
+                self.config.SMTP_PORT,
+                timeout=self.config.TIMEOUT
+            )
             if self.config.USE_TLS:
-                server = smtplib.SMTP(self.config.SMTP_SERVER, self.config.SMTP_PORT)
-                server.starttls()
-            else:
-                server = smtplib.SMTP(self.config.SMTP_SERVER, self.config.SMTP_PORT)
-            
+                # An explicit default context verifies the certificate and
+                # hostname; smtplib's own default does neither.
+                server.starttls(context=create_ssl_context())
+
             server.login(self.user_account['username'], self.user_account['password'])
             
             response_time = (time.time() - start_time) * 1000
@@ -99,11 +112,7 @@ class SMTPLoadTester(User):
                     exception=e
                 )
             
-            if server:
-                try:
-                    server.quit()
-                except:
-                    pass
+            self._safe_quit(server)
             return None
     
     @task(5)
@@ -158,11 +167,7 @@ class SMTPLoadTester(User):
                     exception=e
                 )
             
-            if server:
-                try:
-                    server.quit()
-                except:
-                    pass
+            self._safe_quit(server)
     
     @task(3)
     def send_html_email(self):
@@ -219,11 +224,7 @@ class SMTPLoadTester(User):
                     exception=e
                 )
             
-            if server:
-                try:
-                    server.quit()
-                except:
-                    pass
+            self._safe_quit(server)
     
     @task(1)
     def send_email_with_attachment(self):
@@ -304,11 +305,7 @@ class SMTPLoadTester(User):
                     exception=e
                 )
             
-            if server:
-                try:
-                    server.quit()
-                except:
-                    pass
+            self._safe_quit(server)
     
     @task(2)
     def send_bulk_emails(self):
@@ -367,8 +364,4 @@ class SMTPLoadTester(User):
                     exception=e
                 )
             
-            if server:
-                try:
-                    server.quit()
-                except:
-                    pass
+            self._safe_quit(server)

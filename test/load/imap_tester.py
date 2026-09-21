@@ -5,7 +5,7 @@ import imaplib
 import logging
 from locust import User, task, between
 
-from config import EmailServerConfig
+from config import EmailServerConfig, create_ssl_context
 from user_manager import TestUserManager
 
 logger = logging.getLogger(__name__)
@@ -23,108 +23,101 @@ class IMAPLoadTester(User):
         self.working_config = None  # Cache working config
         logger.info(f"Starting IMAP tests for user: {self.user_account['email']}")
     
-    def _create_ssl_context(self):
-        """Create a more permissive SSL context"""
+    @staticmethod
+    def _safe_logout(mail):
+        """Close a connection, recording rather than hiding teardown errors"""
+        if mail is None:
+            return
         try:
-            context = ssl.create_default_context()
-            # Allow older TLS versions for better compatibility
-            context.minimum_version = ssl.TLSVersion.TLSv1_2
-            # For testing environments with self-signed certificates
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
-            return context
-        except Exception as e:
-            logger.error(f"SSL context creation failed: {e}")
-            return None
-    
+            mail.logout()
+        except Exception:
+            logger.debug("IMAP logout failed during cleanup", exc_info=True)
+
     def _try_imap_connection(self, config):
-        """Try a specific IMAP configuration"""
+        """Open and authenticate one IMAP transport.
+
+        Returns the logged-in connection, or None when the transport itself is
+        unavailable and the caller should try the next one. Certificate and
+        authentication failures propagate instead: retrying either against
+        another transport would downgrade the connection or hammer the account
+        with failed logins.
+        """
         mail = None
         try:
             logger.info(f"Attempting IMAP connection: {config['name']} on port {config['port']} to {self.config.IMAP_SERVER}")
-            
+
             if config.get("ssl", False):
                 # Direct SSL connection (port 993)
-                context = self._create_ssl_context()
-                if context is None:
-                    raise Exception("Failed to create SSL context")
-                
                 mail = imaplib.IMAP4_SSL(
-                    self.config.IMAP_SERVER, 
+                    self.config.IMAP_SERVER,
                     config["port"],
-                    ssl_context=context
+                    ssl_context=create_ssl_context(),
+                    timeout=self.config.TIMEOUT
                 )
                 logger.debug(f"SSL connection established on port {config['port']}")
             else:
-                # Plain connection (port 143), possibly with STARTTLS
-                mail = imaplib.IMAP4(self.config.IMAP_SERVER, config["port"])
-                logger.debug(f"Plain connection established on port {config['port']}")
-                
-                if config.get("starttls", False):
-                    context = self._create_ssl_context()
-                    if context is None:
-                        raise Exception("Failed to create SSL context for STARTTLS")
-                    mail.starttls(ssl_context=context)
-                    logger.debug("STARTTLS upgrade successful")
-            
-            # Test login
-            try:
-                mail.login(self.user_account['username'], self.user_account['password'])
-                logger.info(f"✅ IMAP login successful using {config['name']} on port {config['port']} for user {self.user_account['username']}")
-                return mail, config
-            except imaplib.IMAP4.error as login_error:
-                logger.error(f"❌ IMAP login failed on port {config['port']}: {login_error}")
-                raise
-            
+                # Plain connection (port 143) upgraded with STARTTLS
+                mail = imaplib.IMAP4(
+                    self.config.IMAP_SERVER,
+                    config["port"],
+                    timeout=self.config.TIMEOUT
+                )
+                mail.starttls(ssl_context=create_ssl_context())
+                logger.debug(f"STARTTLS upgrade successful on port {config['port']}")
+        except ssl.SSLCertVerificationError:
+            logger.error(f"❌ Untrusted TLS certificate from {self.config.IMAP_SERVER}:{config['port']}; refusing to send credentials")
+            self._safe_logout(mail)
+            raise
         except Exception as e:
             logger.warning(f"❌ IMAP connection failed for {config['name']} (port {config['port']}): {type(e).__name__}: {e}")
-            if mail:
-                try: 
-                    mail.logout()
-                except: 
-                    pass
-            return None, None
-    
+            self._safe_logout(mail)
+            return None
+
+        try:
+            mail.login(self.user_account['username'], self.user_account['password'])
+        except imaplib.IMAP4.error as login_error:
+            logger.error(f"❌ IMAP login failed on port {config['port']}: {login_error}")
+            self._safe_logout(mail)
+            raise
+
+        logger.info(f"✅ IMAP login successful using {config['name']} on port {config['port']} for user {self.user_account['username']}")
+        return mail
+
     def _connect_imap(self):
         """Connect to IMAP with fallback configurations"""
         start_time = time.time()
-        
-        # If we have a working config, try it first
-        if self.working_config:
-            mail, config = self._try_imap_connection(self.working_config)
-            if mail:
-                self.environment.events.request.fire(
-                    request_type="IMAP",
-                    name="connect",
-                    response_time=(time.time() - start_time) * 1000,
-                    response_length=0,
-                    exception=None
-                )
-                return mail
-        
-        # Try all configurations until one works
-        for config in self.config.IMAP_CONFIGS:
-            mail, working_config = self._try_imap_connection(config)
-            if mail:
-                self.working_config = working_config  # Cache for future use
-                self.environment.events.request.fire(
-                    request_type="IMAP",
-                    name="connect",
-                    response_time=(time.time() - start_time) * 1000,
-                    response_length=0,
-                    exception=None
-                )
-                return mail
-        
-        # All configurations failed
-        error_msg = f"All IMAP connection methods failed for {self.config.IMAP_SERVER}"
-        logger.error(error_msg)
+
+        # Prefer the config that worked last time, then the remaining ones
+        configs = self.config.IMAP_CONFIGS
+        if self.working_config in configs:
+            configs = [self.working_config] + [c for c in configs if c != self.working_config]
+
+        try:
+            for config in configs:
+                mail = self._try_imap_connection(config)
+                if mail:
+                    self.working_config = config  # Cache for future use
+                    self.environment.events.request.fire(
+                        request_type="IMAP",
+                        name="connect",
+                        response_time=(time.time() - start_time) * 1000,
+                        response_length=0,
+                        exception=None
+                    )
+                    return mail
+            error = Exception(f"All IMAP connection methods failed for {self.config.IMAP_SERVER}")
+        except (ssl.SSLCertVerificationError, imaplib.IMAP4.error) as e:
+            # Aborted deliberately: neither an untrusted certificate nor a
+            # rejected password is worth retrying on the next transport.
+            error = e
+
+        logger.error(f"IMAP connect failed: {error}")
         self.environment.events.request.fire(
             request_type="IMAP",
             name="connect",
             response_time=(time.time() - start_time) * 1000,
             response_length=0,
-            exception=Exception(error_msg)
+            exception=error
         )
         return None
 
@@ -159,11 +152,7 @@ class IMAPLoadTester(User):
                 response_length=0,
                 exception=e
             )
-            if mail:
-                try: 
-                    mail.logout()
-                except: 
-                    pass
+            self._safe_logout(mail)
             logger.error(f"Inbox check failed: {e}")
 
     @task(3)
@@ -196,11 +185,7 @@ class IMAPLoadTester(User):
                 response_length=0,
                 exception=e
             )
-            if mail:
-                try: 
-                    mail.logout()
-                except: 
-                    pass
+            self._safe_logout(mail)
             logger.error(f"Folder listing failed: {e}")
 
     @task(2)
@@ -253,9 +238,5 @@ class IMAPLoadTester(User):
                 response_length=0,
                 exception=e
             )
-            if mail:
-                try: 
-                    mail.logout()
-                except: 
-                    pass
+            self._safe_logout(mail)
             logger.error(f"Message fetch failed: {e}")
