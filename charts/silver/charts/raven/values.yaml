@@ -7,8 +7,14 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/lsflk/raven
-  tag: ""            # defaults to appVersion (":latest")
-  pullPolicy: Always # floating tag; pin + IfNotPresent in prod
+  # Defaults to appVersion, now a released tag rather than "latest". Pinning
+  # matters more here than anywhere else in the stack: a pod restart used to be
+  # able to swap the IMAP server binary, and rollback was impossible.
+  # v0.7.0 == the digest :latest pointed at when this was pinned
+  # (sha256:650b8008d18ca782ae300fba928445bca6e35cdc93d3f03816735a5912fe77dd).
+  # For full immutability set tag to that digest instead.
+  tag: ""
+  pullPolicy: IfNotPresent
 
 imagePullSecrets: []
 nameOverride: ""
@@ -17,10 +23,37 @@ fullnameOverride: ""
 podAnnotations: {}
 
 # Raven's upstream image expects to bind low ports and manage /app/data as root.
+#
+# UID 0 is retained deliberately. Raven binds 143/993/24 and owns /app/data, and
+# the compose deployment additionally relies on root because the config generator
+# writes root-owned files into the mounted config directory. De-rooting needs that
+# ownership fixed first, so it is left as follow-up rather than half-done here.
+#
+# What UID 0 costs is bounded instead. Without capabilities.drop a root container
+# holds the full default set — CAP_DAC_OVERRIDE, CAP_SYS_CHROOT, CAP_SETUID and the
+# rest — on the single most exposed workload in the cluster: raven terminates IMAP
+# and SASL for external clients and can take hostPort 143/993. Dropping to just
+# NET_BIND_SERVICE removes almost all of that while keeping the low-port bind.
+#
+# Applied to every container, including the init-db-dir and render-config init
+# containers (see templates/deployment.yaml).
 podSecurityContext: {}
 securityContext:
   runAsUser: 0
   runAsGroup: 0
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+    add:
+      - NET_BIND_SERVICE
+  seccompProfile:
+    type: RuntimeDefault
+  # Deliberately false, matching the rspamd chart. Raven's writable paths beyond
+  # the mounted volumes have not been established, and a mail server that cannot
+  # write is worse than one with a writable root filesystem. Revisit with a real
+  # deployment to confirm what it touches outside /app/data and /etc/raven.
+  readOnlyRootFilesystem: false
 
 service:
   # ClusterIP for in-cluster bring-up. Public mail needs LoadBalancer or hostPort

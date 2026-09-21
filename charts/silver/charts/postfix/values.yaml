@@ -28,13 +28,41 @@ hostPort:
 probes:
   enabled: true
 
-resources: {}
+# An empty map here renders NO resources key at all (the template wraps it in
+# `{{- with }}`), which puts postfix in QoS class BestEffort — the first thing the
+# kubelet evicts under node memory pressure. Postfix holds the inbound mail queue,
+# and raven, rspamd, redis, unbound and seaweedfs all set requests and limits, so
+# postfix was the one component guaranteed to die first. Limits also cap what a
+# large-attachment burst can consume.
+#
+# Sized against the neighbouring subcharts: below rspamd (which runs the scanners)
+# and in line with the other always-on services. Raise the memory limit if the
+# queue is large or many concurrent connections are expected.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
 
 # Postfix binds privileged ports 25/587. Keep root + NET_BIND_SERVICE for v1;
 # full de-root is later hardening.
+#
+# The `add` below was previously the whole story, which made it cosmetic: as UID 0
+# the container already holds the full default capability set, so adding one grants
+# nothing and the real privilege is unbounded. The drop is what makes the add mean
+# something.
 securityContext:
   runAsUser: 0
   runAsGroup: 0
+  allowPrivilegeEscalation: false
   capabilities:
+    drop:
+      - ALL
     add:
       - NET_BIND_SERVICE
+  seccompProfile:
+    type: RuntimeDefault
+  # Postfix writes its spool, and the entrypoint rewrites config at start-up.
+  readOnlyRootFilesystem: false

@@ -25,6 +25,13 @@ spec:
       labels:
         {{- include "raven.selectorLabels" . | nindent 8 }}
     spec:
+      # Raven never calls the Kubernetes API, but with no serviceAccountName it runs
+      # under the namespace default ServiceAccount and its token is mounted at
+      # /var/run/secrets/kubernetes.io/serviceaccount. On the workload that terminates
+      # IMAP and SASL for external clients, that turns an RCE into a usable API
+      # credential. Not mounting it is simpler than a dedicated ServiceAccount and
+      # removes the same reachable secret.
+      automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

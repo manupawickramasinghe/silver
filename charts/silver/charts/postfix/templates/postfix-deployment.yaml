@@ -20,6 +20,10 @@ spec:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap-postfix.yaml") . | sha256sum }}
     spec:
+      # Postfix never calls the Kubernetes API. Without this it runs under the
+      # namespace default ServiceAccount with its token mounted, handing an
+      # internet-facing SMTP process a cluster credential it has no use for.
+      automountServiceAccountToken: false
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

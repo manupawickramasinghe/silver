@@ -21,6 +21,10 @@ spec:
       labels:
         {{- include "seaweedfs.selectorLabels" . | nindent 8 }}
     spec:
+      # SeaweedFS never calls the Kubernetes API. Without this it runs under the
+      # namespace default ServiceAccount with its token mounted, on the process that
+      # holds every mail attachment.
+      automountServiceAccountToken: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
