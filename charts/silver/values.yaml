@@ -25,6 +25,15 @@ global:
     secretName: silver-thunder-admin
     secretKey: password
     password: ""
+  # THUNDER_PUBLIC_URL for the setup job, derived as https://<domain>:8090 by
+  # templates/thunder-public-url-secret.yaml. A Secret is the only channel the
+  # vendored Thunder subchart offers for a value the umbrella computes (setup.env is
+  # toYaml'd with no tpl, and the job declares no envFrom) — it is not sensitive.
+  # Only override the name if it collides with something else in the namespace; it
+  # must stay equal to thunder.setup.secretEnv THUNDER_PUBLIC_URL secretName.
+  thunderPublicUrl:
+    secretName: silver-thunder-public-url
+    secretKey: publicUrl
   # Shared S3 credentials so seaweedfs (server) and raven (client) always agree.
   # secretKey "" => both charts DERIVE the same key from the release name
   # (deterministic, no cross-lookup) so a fresh one-command install matches out
@@ -48,9 +57,12 @@ global:
     # OAuth fail TLS verification until you do.
     issuer: le-staging
     renewBefore: "720h" # renew 30 days before expiry
-    # Empty -> derives [ mail.<domain>, <domain> ] from global.domain, so the
-    # cert Secret postfix mounts (silver.tlsSecretName) always exists. Override
-    # only to add extra SANs.
+    # Extra SANs, ADDED to the [ mail.<domain>, <domain> ] pair derived from
+    # global.domain. One Certificate is issued for the whole set, into the Secret
+    # postfix and raven mount (silver.tlsSecretName), so that Secret always exists
+    # no matter what you put here. Duplicates are removed.
+    #   --set 'global.tls.domains={autoconfig.example.com,autodiscover.example.com}'
+    # Every name must resolve to this cluster before cert-manager can validate it.
     domains: []
   # SASL auth is served by raven. Disable for a raven-less standalone bring-up
   # (postfix still accepts mail on 25; submission works without auth).
@@ -209,22 +221,34 @@ thunder:
     env:
       - name: THUNDER_ADMIN_USERNAME
         value: "admin"
-      # Must match configuration.server.publicUrl above. The bootstrap script
-      # registers the CONSOLE app's redirect URI as ${THUNDER_PUBLIC_URL}/console;
-      # unset, it falls back to THUNDER_API_BASE (localhost) and console login
-      # fails with "Invalid redirect URI".
-      - name: THUNDER_PUBLIC_URL
-        value: ""
-    # Admin password comes from the Secret the umbrella creates
-    # (templates/thunder-admin-secret.yaml); no kubectl step is needed. The name
-    # must equal global.thunderAdmin.secretName and raven.thunder.systemPasswordSecret
-    # — the template fails the render if they diverge. To read the generated value:
-    #   kubectl get secret silver-thunder-admin -n silver \
-    #     -o jsonpath='{.data.password}' | base64 -d
+      # THUNDER_PUBLIC_URL is deliberately NOT set here. It must match
+      # configuration.server.publicUrl above (the bootstrap script registers the
+      # CONSOLE app's redirect URI as ${THUNDER_PUBLIC_URL}/console; unset, it falls
+      # back to THUNDER_API_BASE (localhost) and console login fails with "Invalid
+      # redirect URI"), so it has to track global.domain — and values files cannot be
+      # templated. It is therefore derived and delivered via secretEnv below.
+      # Setting it here as a literal still works and is still checked by
+      # templates/domain-guard.yaml, but there is no reason to.
+    # Values the umbrella derives and delivers as Secrets; no kubectl step is needed.
+    # Each secretName must equal the corresponding global.* value — the templates fail
+    # the render if they diverge, rather than letting the mismatch surface as a pod
+    # stuck in CreateContainerConfigError.
+    #
+    #   THUNDER_ADMIN_PASSWORD -> templates/thunder-admin-secret.yaml
+    #     (global.thunderAdmin.secretName, also read by raven.thunder.systemPasswordSecret)
+    #     To read the generated value:
+    #       kubectl get secret silver-thunder-admin -n silver \
+    #         -o jsonpath='{.data.password}' | base64 -d
+    #   THUNDER_PUBLIC_URL -> templates/thunder-public-url-secret.yaml
+    #     (global.thunderPublicUrl.secretName), derived as https://<global.domain>:8090
     secretEnv:
       - name: THUNDER_ADMIN_PASSWORD
         secretName: silver-thunder-admin
         secretKey: password
+        optional: false
+      - name: THUNDER_PUBLIC_URL
+        secretName: silver-thunder-public-url
+        secretKey: publicUrl
         optional: false
 
   # Bootstrap scripts, delivered via the ConfigMap the umbrella renders from

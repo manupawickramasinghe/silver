@@ -21,22 +21,44 @@ migration is where that becomes possible (see charts/PLAN.md).
 {{- $domain := include "silver.domain" . }}
 {{- $expectedUrl := printf "https://%s:8090" $domain }}
 
-{{- $publicUrl := (((.Values.thunder).configuration).server).publicUrl }}
-{{- if and $publicUrl (ne $publicUrl $expectedUrl) }}
+{{- /* Empty is NOT safe here, so these are `required`, not skip-if-empty.
+
+     The umbrella ships publicUrl: "" and gateClient.hostname: "", which OVERRIDE the
+     subchart's own defaults (an empty string is a set value). The subchart writes them
+     straight into its deployment.yaml ConfigMap, so Thunder comes up with
+     public_url: "" and jwt.issuer: "" while raven is told
+     oauth_issuer_url: https://<domain>:8090. Pods start, `helm lint` passes, and every
+     OAuth login fails on an issuer mismatch — precisely the silent breakage this file
+     exists to prevent, so it must be caught at render time.
+
+     Unlike THUNDER_PUBLIC_URL these cannot be derived and delivered by the umbrella:
+     they are consumed as subchart VALUES (rendered into a ConfigMap via `toYaml`),
+     not as container env, so there is no Secret or envFrom hook to inject them
+     through. Until the thunderid migration they have to be passed explicitly. */}}
+{{- $publicUrl := required (printf "thunder.configuration.server.publicUrl is required when thunder.enabled: it becomes the JWT issuer and must equal raven's oauth_issuer_url. Fix with:\n  --set thunder.configuration.server.publicUrl=%s" $expectedUrl) (((.Values.thunder).configuration).server).publicUrl }}
+{{- if ne $publicUrl $expectedUrl }}
   {{- fail (printf "thunder.configuration.server.publicUrl (%s) does not match global.domain (%s). It becomes the JWT issuer, so it must be %s. Fix with:\n  --set thunder.configuration.server.publicUrl=%s" $publicUrl $domain $expectedUrl $expectedUrl) }}
 {{- end }}
 
-{{- $gateHost := (((.Values.thunder).configuration).gateClient).hostname }}
-{{- if and $gateHost (ne $gateHost $domain) }}
+{{- $gateHost := required (printf "thunder.configuration.gateClient.hostname is required when thunder.enabled: empty renders gate_client.hostname: \"\" and console/gate login breaks. Fix with:\n  --set thunder.configuration.gateClient.hostname=%s" $domain) (((.Values.thunder).configuration).gateClient).hostname }}
+{{- if ne $gateHost $domain }}
   {{- fail (printf "thunder.configuration.gateClient.hostname (%s) does not match global.domain (%s). Fix with:\n  --set thunder.configuration.gateClient.hostname=%s" $gateHost $domain $domain) }}
 {{- end }}
 
 {{- /* THUNDER_PUBLIC_URL drives the CONSOLE app's redirect URI at bootstrap; if it
-     disagrees with publicUrl, console login fails with "Invalid redirect URI". */}}
-{{- /* Entries can be nil: `--set thunder.setup.env[1].value=...` leaves index 0 nil. */}}
+     disagrees with publicUrl, console login fails with "Invalid redirect URI".
+
+     By default nothing sets it here: the umbrella derives it from global.domain and
+     delivers it through templates/thunder-public-url-secret.yaml, because the vendored
+     subchart renders setup.env with `toYaml` (no `tpl`) and supports no `envFrom`, so a
+     plain values entry could only ever be a hand-written literal. An explicit override
+     is still honoured — and still checked, since a stale literal is exactly what this
+     file exists to catch.
+
+     Entries can be nil: `--set thunder.setup.env[1].value=...` leaves index 0 nil. */}}
 {{- range (((.Values.thunder).setup).env | default list) }}
-  {{- if and . (eq (.name | default "") "THUNDER_PUBLIC_URL") (ne (.value | default "") $expectedUrl) }}
-    {{- fail (printf "thunder.setup.env THUNDER_PUBLIC_URL (%s) does not match global.domain (%s). It must equal thunder.configuration.server.publicUrl (%s), or the CONSOLE app is registered with the wrong redirect URI. Fix with:\n  --set 'thunder.setup.env[1].name=THUNDER_PUBLIC_URL' --set 'thunder.setup.env[1].value=%s'" (.value | default "") $domain $expectedUrl $expectedUrl) }}
+  {{- if and . (eq (.name | default "") "THUNDER_PUBLIC_URL") (.value) (ne .value $expectedUrl) }}
+    {{- fail (printf "thunder.setup.env THUNDER_PUBLIC_URL (%s) does not match global.domain (%s). It must equal thunder.configuration.server.publicUrl (%s), or the CONSOLE app is registered with the wrong redirect URI. Either drop the override and let the chart derive it, or fix with:\n  --set 'thunder.setup.env[1].name=THUNDER_PUBLIC_URL' --set 'thunder.setup.env[1].value=%s'" .value $domain $expectedUrl $expectedUrl) }}
   {{- end }}
 {{- end }}
 {{- end }}
