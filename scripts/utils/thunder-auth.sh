@@ -24,6 +24,24 @@ RED="\033[0;31m"
 NC="\033[0m" # No Color
 
 # ============================================
+# Function: Escape a value for use inside a JSON string literal
+# ============================================
+# jq is not available in every environment these scripts run in (notably the
+# Thunder container image), so escaping is done in pure bash. Needed because the
+# admin password is interpolated into the authentication payload below and a
+# strong password may legitimately contain a quote or a backslash.
+# ============================================
+thunder_json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"      # backslash first, so the escapes added below survive
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    s="${s//$'\t'/\\t}"
+    printf '%s' "$s"
+}
+
+# ============================================
 # Function: Extract DEVELOP App ID from Thunder setup logs
 # ============================================
 thunder_get_develop_app_id() {
@@ -59,6 +77,15 @@ thunder_authenticate() {
 
     if [ -z "$thunder_host" ] || [ -z "$thunder_port" ]; then
         echo -e "${RED}✗ Thunder host and port are required${NC}" >&2
+        return 1
+    fi
+
+    # No default password: falling back to a well-known value would let these
+    # utilities quietly succeed against an admin account anyone can guess.
+    # This is a sourced library, so report and return instead of exiting.
+    if [ -z "${THUNDER_ADMIN_PASSWORD:-}" ]; then
+        echo -e "${RED}✗ THUNDER_ADMIN_PASSWORD must be set${NC}" >&2
+        echo "Set it to the password used to bootstrap Thunder (see services/.env.example)." >&2
         return 1
     fi
 
@@ -105,11 +132,16 @@ thunder_authenticate() {
 
     # Step 3: Complete authentication flow (get assertion)
     echo "  - Completing authentication flow..."
+    local auth_username
+    local auth_password
+    auth_username=$(thunder_json_escape "${THUNDER_ADMIN_USERNAME:-admin}")
+    auth_password=$(thunder_json_escape "${THUNDER_ADMIN_PASSWORD}")
+
     local auth_response
     auth_response=$(curl -s -w "\n%{http_code}" -X POST \
         "https://${thunder_host}:${thunder_port}/flow/execute" \
         -H "Content-Type: application/json" \
-        -d "{\"flowId\":\"${FLOW_ID}\",\"inputs\":{\"username\":\"${THUNDER_ADMIN_USERNAME:-admin}\",\"password\":\"${THUNDER_ADMIN_PASSWORD:-admin}\",\"requested_permissions\":\"system\"},\"action\":\"action_001\"}")
+        -d "{\"flowId\":\"${FLOW_ID}\",\"inputs\":{\"username\":\"${auth_username}\",\"password\":\"${auth_password}\",\"requested_permissions\":\"system\"},\"action\":\"action_001\"}")
 
     local auth_body
     local auth_status
