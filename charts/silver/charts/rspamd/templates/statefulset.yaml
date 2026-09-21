@@ -5,7 +5,9 @@ metadata:
   labels:
     {{- include "rspamd.labels" . | nindent 4 }}
 spec:
-  serviceName: {{ include "rspamd.fullname" . }}
+  # Must name a headless Service that actually exists, otherwise stable per-pod
+  # DNS never resolves. See templates/service-headless.yaml.
+  serviceName: {{ include "rspamd.headlessServiceName" . }}
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
@@ -15,6 +17,9 @@ spec:
       annotations:
         checksum/config-static: {{ include (print $.Template.BasePath "/configmap-rspamd.yaml") . | sha256sum }}
         checksum/config-options: {{ include (print $.Template.BasePath "/configmap-options.yaml") . | sha256sum }}
+        # subPath mounts never receive Secret updates, so a changed controller
+        # password only takes effect if the pod is replaced.
+        checksum/config-webui: {{ include (print $.Template.BasePath "/secret-webui.yaml") . | sha256sum }}
       {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -37,12 +42,12 @@ spec:
             - /bin/bash
             - -c
             - |
-              echo "Checking Redis connectivity at {{ .Values.dependencies.redis.host }}:{{ .Values.dependencies.redis.port }}"
+              echo "Checking Redis connectivity at {{ include "rspamd.redisHost" . }}:{{ .Values.dependencies.redis.port }}"
               timeout_sec={{ .Values.dependencies.initCheckTimeout }}
               interval=5
               elapsed=0
               while [ $elapsed -lt $timeout_sec ]; do
-                if timeout 2 bash -c "echo > /dev/tcp/{{ .Values.dependencies.redis.host }}/{{ .Values.dependencies.redis.port }}" >/dev/null 2>&1; then
+                if timeout 2 bash -c "echo > /dev/tcp/{{ include "rspamd.redisHost" . }}/{{ .Values.dependencies.redis.port }}" >/dev/null 2>&1; then
                   echo "Redis is reachable!"
                   exit 0
                 fi
@@ -64,12 +69,12 @@ spec:
             - /bin/bash
             - -c
             - |
-              echo "Checking Unbound DNS at {{ .Values.dependencies.unbound.host }}:{{ .Values.dependencies.unbound.port }}"
+              echo "Checking Unbound DNS at {{ include "rspamd.unboundHost" . }}:{{ .Values.dependencies.unbound.port }}"
               timeout_sec={{ .Values.dependencies.initCheckTimeout }}
               interval=5
               elapsed=0
               while [ $elapsed -lt $timeout_sec ]; do
-                if timeout 2 bash -c "echo > /dev/tcp/{{ .Values.dependencies.unbound.host }}/{{ .Values.dependencies.unbound.port }}" >/dev/null 2>&1; then
+                if timeout 2 bash -c "echo > /dev/tcp/{{ include "rspamd.unboundHost" . }}/{{ .Values.dependencies.unbound.port }}" >/dev/null 2>&1; then
                   echo "Unbound DNS is reachable!"
                   exit 0
                 fi
@@ -98,14 +103,9 @@ spec:
             - name: webui
               containerPort: 11334
               protocol: TCP
-          {{- if .Values.webui.password }}
-          env:
-            - name: RSPAMD_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "rspamd.fullname" . }}-webui
-                  key: password
-          {{- end }}
+          # No RSPAMD_PASSWORD env: the rspamd/rspamd image does not read that
+          # variable, so it never configured anything. The controller password
+          # arrives as the worker-controller.inc mount below.
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
@@ -134,6 +134,13 @@ spec:
             - name: config-options
               mountPath: /etc/rspamd/local.d/redis.conf
               subPath: redis.conf
+            # Controller worker: bind address plus the read-only and enable
+            # passwords. Without this the image keeps its own stock
+            # worker-controller.inc and the chart's password is never applied.
+            - name: webui
+              mountPath: /etc/rspamd/local.d/worker-controller.inc
+              subPath: worker-controller.inc
+              readOnly: true
             - name: data
               mountPath: {{ .Values.persistence.mountPath }}
       {{- with .Values.nodeSelector }}
@@ -155,6 +162,14 @@ spec:
         - name: config-options
           configMap:
             name: {{ include "rspamd.fullname" . }}-config-options
+        - name: webui
+          secret:
+            secretName: {{ include "rspamd.webuiSecretName" . }}
+            # World-readable inside the pod on purpose. The confidentiality
+            # boundary is the Secret, not the file mode, and a mode the rspamd
+            # user cannot read makes Rspamd skip the file and silently fall back
+            # to its built-in controller defaults.
+            defaultMode: 0444
   volumeClaimTemplates:
     - metadata:
         name: data

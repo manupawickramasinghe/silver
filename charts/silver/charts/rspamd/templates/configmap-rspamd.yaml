@@ -5,14 +5,23 @@ metadata:
   labels:
     {{- include "rspamd.labels" . | nindent 4 }}
 data:
+  {{- /* Rendered empty unless antivirus is explicitly enabled. Silver ships no
+  ClamAV chart, so the previous default pointed every deployment at a Service
+  named clamav-server that nothing creates. The key itself must always exist
+  because statefulset.yaml mounts it with subPath. */}}
   antivirus.conf: |
+    {{- if .Values.modules.antivirus.enabled }}
     clamav {
       type = "clamav";
-      servers = "{{ .Values.dependencies.clamav.host }}:{{ .Values.dependencies.clamav.port }}";
+      servers = "{{ include "rspamd.clamavHost" . }}:{{ .Values.dependencies.clamav.port }}";
       action = "{{ .Values.modules.antivirus.clamav_action }}";
       symbol = "CLAM_VIRUS";
       log_clean = true;
     }
+    {{- else }}
+    # Antivirus disabled: set rspamd.modules.antivirus.enabled=true and
+    # rspamd.dependencies.clamav.host=<your-clamav> to turn it on.
+    {{- end }}
 
   classifier-bayes.conf: |
     backend = "{{ .Values.modules.classifier_bayes.backend }}";
