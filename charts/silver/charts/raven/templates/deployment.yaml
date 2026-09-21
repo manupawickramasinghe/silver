@@ -15,6 +15,9 @@ spec:
   template:
     metadata:
       annotations:
+        # Note: the config Secret no longer carries the S3 secret key (it holds a
+        # placeholder the render-config init container fills in), so this checksum
+        # does not change when that key rotates. Restart raven after rotating it.
         checksum/config: {{ include (print $.Template.BasePath "/secret-config.yaml") . | sha256sum }}
       {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -42,6 +45,56 @@ spec:
           volumeMounts:
             - name: data
               mountPath: {{ .Values.persistence.mountPath }}
+        # Raven takes its S3 credential from raven.yaml/delivery.yaml, not from
+        # the environment, so a secretKeyRef cannot reach it directly. The config
+        # Secret ships a placeholder; this substitutes the real key — generated
+        # once by the seaweedfs subchart — into a private in-memory copy of the
+        # config. Consequence: the S3 key lives only in the seaweedfs Secret, and
+        # a one-command install works because the reference is resolved by the
+        # kubelet at pod start, after Helm has applied that Secret.
+        - name: render-config
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- if and .Values.blobStorage.enabled (not (include "raven.s3SecretKeyExplicit" .)) }}
+          env:
+            - name: SILVER_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "raven.s3SecretName" . }}
+                  key: {{ include "raven.s3SecretKeyRefKey" . }}
+                  # Fail the pod rather than start Raven with an empty S3 key.
+                  optional: false
+          {{- end }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              for f in raven.yaml delivery.yaml; do
+                # awk reads the key from ENVIRON so it never appears in argv.
+                # index/substr rather than gsub: gsub would interpret & and \ in
+                # the replacement. Building the output left-to-right also cannot
+                # loop if the key itself ever contained the placeholder.
+                awk '
+                  BEGIN { k = ENVIRON["SILVER_S3_SECRET_KEY"]; p = "{{ include "raven.s3SecretKeyPlaceholder" . }}" }
+                  {
+                    out = ""; rest = $0
+                    while ((i = index(rest, p)) > 0) {
+                      out = out substr(rest, 1, i - 1) k
+                      rest = substr(rest, i + length(p))
+                    }
+                    print out rest
+                  }
+                ' "/etc/raven-src/$f" >"/etc/raven/$f"
+                chmod 600 "/etc/raven/$f"
+              done
+          volumeMounts:
+            - name: config
+              mountPath: /etc/raven-src
+              readOnly: true
+            - name: config-rendered
+              mountPath: /etc/raven
       containers:
         - name: raven
           securityContext:
@@ -103,7 +156,9 @@ spec:
           volumeMounts:
             - name: data
               mountPath: {{ .Values.persistence.mountPath }}
-            - name: config
+            # Populated by the render-config init container, not mounted from
+            # the config Secret directly.
+            - name: config-rendered
               mountPath: /etc/raven
               readOnly: true
             {{- if .Values.tls.enabled }}
@@ -118,6 +173,11 @@ spec:
         - name: config
           secret:
             secretName: {{ include "raven.configSecretName" . }}
+        # medium: Memory keeps the substituted S3 key off the node's disk.
+        - name: config-rendered
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
         {{- if .Values.tls.enabled }}
         - name: certs
           secret:

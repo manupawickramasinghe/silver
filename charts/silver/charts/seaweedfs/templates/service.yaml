@@ -11,19 +11,16 @@ metadata:
   {{- end }}
 spec:
   type: {{ .Values.service.type }}
+  # S3 gateway ONLY. The master HTTP/gRPC API used to share this Service; it has
+  # no authentication of any kind (s3-config.json gates the S3 gateway, nothing
+  # else), so anything that could resolve seaweedfs-s3 could enumerate volumes
+  # and read or delete raw attachment blobs without ever presenting the S3
+  # credential. The master now lives on its own headless Service — see
+  # service-master.yaml — reached only by the bucket-init Job and the helm test.
   ports:
     - name: s3
       port: {{ .Values.service.s3Port }}
       targetPort: s3
-      protocol: TCP
-    - name: master
-      port: {{ .Values.service.masterPort }}
-      targetPort: master
-      protocol: TCP
-    # weed shell (bucket-init Job, helm test) connects over master gRPC.
-    - name: master-grpc
-      port: {{ .Values.service.masterGrpcPort }}
-      targetPort: master-grpc
       protocol: TCP
   selector:
     {{- include "seaweedfs.selectorLabels" . | nindent 4 }}

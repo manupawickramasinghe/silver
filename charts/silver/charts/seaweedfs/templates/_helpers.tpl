@@ -36,13 +36,60 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
 {{/*
-Resolve the S3 secretKey. Priority: global.s3.secretKey > local s3.secretKey >
-a value DERIVED deterministically from the release name. Derivation (not random
-+ lookup) is what lets the raven subchart compute the SAME key on a fresh
-one-command `helm install` — lookup can't see a Secret the same install hasn't
-applied yet. Override global.s3.secretKey in prod. Hex from sha256sum, so it is
-JSON/URL-safe (no escaping needed).
+Master HTTP/gRPC Service name. The master API is UNAUTHENTICATED — the identity
+in s3-config.json only gates the S3 gateway — so it does NOT belong on the S3
+Service alongside 8333. It gets its own headless Service, reached only by the
+bucket-init Job and the helm test (`weed shell`).
+*/}}
+{{- define "seaweedfs.masterServiceName" -}}
+{{- printf "%s-master" (include "seaweedfs.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Resolve the S3 secretKey.
+
+Priority:
+  1. global.s3.secretKey / s3.secretKey — an operator-supplied key.
+  2. The key already stored in this release's S3 Secret (via `lookup`), so
+     `helm upgrade` never rotates a credential the running store is using.
+  3. A freshly generated random key (first install only).
+
+This used to DERIVE the key from the release name
+(`printf "%s-silver-seaweedfs-s3" .Release.Name | sha256sum | trunc 40`). The
+derivation was deliberate: raven needs the same key, and `lookup` cannot see a
+Secret the same install has not applied yet, so recomputing it in both charts was
+the only way a one-command `helm install` could agree on a value. The cost was
+that every default install's S3 admin key — Admin/Read/Write over all mail
+attachments — was computable offline by anyone from public information.
+
+The fix breaks the "both sides compute it" requirement rather than the
+derivation: the key is generated HERE, once, and raven no longer computes
+anything. It reads this Secret with a secretKeyRef instead
+(charts/silver/charts/raven/templates/_helpers.tpl + deployment.yaml), which
+works on a fresh one-command install because the reference is resolved by the
+kubelet at pod start, long after Helm has applied this Secret.
+
+Reuse guard pattern mirrors charts/silver/templates/thunder-admin-secret.yaml.
+
+⚠️  `lookup` returns nothing without a cluster connection, so `helm template` /
+`--dry-run` emits a NEW random key on every render. Piping that into
+`kubectl apply` against a live release rotates the S3 credential. Set
+global.s3.secretKey explicitly for GitOps / render-then-apply workflows.
 */}}
 {{- define "seaweedfs.secretKey" -}}
-{{- (((.Values.global).s3).secretKey) | default .Values.s3.secretKey | default (printf "%s-silver-seaweedfs-s3" .Release.Name | sha256sum | trunc 40) }}
+{{- $explicit := (((.Values.global).s3).secretKey) | default .Values.s3.secretKey -}}
+{{- if $explicit -}}
+{{- $explicit -}}
+{{- else -}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace (include "seaweedfs.secretName" .) -}}
+{{- $data := dict -}}
+{{- if $existing -}}
+{{- $data = $existing.data | default dict -}}
+{{- end -}}
+{{- if index $data "secretKey" -}}
+{{- index $data "secretKey" | b64dec -}}
+{{- else -}}
+{{- randAlphaNum 40 -}}
+{{- end -}}
+{{- end -}}
 {{- end }}
